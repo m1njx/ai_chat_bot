@@ -67,6 +67,3 @@ streamlit run app.py
 - `brain.py`: 뉴스/데이터 수집 및 키워드 추출 엔진.
 - `data/`: 수집된 지식(JSON, PDF, TXT)이 저장되는 디렉토리.
 - `faiss_index.bin`: 검색을 위한 벡터 인덱스 파일.
-
----
-Developed with ❤️ by Antigravity AI
