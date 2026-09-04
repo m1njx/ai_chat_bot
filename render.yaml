@@ -1,0 +1,39 @@
+services:
+  - type: web
+    name: ai-knowledge-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: sh start.sh
+    envVars:
+      # numpy 2.4는 3.11 이상, streamlit/torch는 3.10 이상을 요구한다.
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # 로그가 버퍼에 갇혀 늦게 보이는 것을 방지 (제공자 전환 로그 등)
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # PORT는 Render가 직접 주입하므로 여기서 고정하지 않는다.
+
+      # 프론트엔드 배포 주소를 쉼표로 구분해 넣는다. 없으면 브라우저가 요청을 막는다.
+      # 예: https://ai-knowledge.vercel.app
+      - key: CORS_ORIGINS
+        sync: false
+      # 로그인 토큰 서명 키. 지정하지 않으면 재배포마다 로그인이 풀린다.
+      - key: SECRET_KEY
+        generateValue: true
+
+      # 아래 키들은 Render 대시보드에서 직접 입력한다 (레포에 커밋 금지).
+      - key: GOOGLE_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: NAVER_CLIENT_ID
+        sync: false
+      - key: NAVER_CLIENT_SECRET
+        sync: false
+      - key: SERPER_API_KEY
+        sync: false
+      - key: KMA_API_KEY
+        sync: false
+      # 공개 배포 시 반드시 설정할 것: 비밀번호 게이트 + 세션별 대화 격리가 켜진다.
+      - key: APP_PASSWORD
+        sync: false

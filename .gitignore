@@ -1,0 +1,21 @@
+.env
+.venv
+__pycache__/
+*.pyc
+.DS_Store
+
+# Data and Index files (should usually not be in git)
+data/
+faiss_index.bin
+documents_data.json
+chat_history.json
+
+# 원자적 쓰기용 임시 파일 / 작업 폴더
+*.tmp
+scratch/
+
+# 프론트엔드
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+.env.local

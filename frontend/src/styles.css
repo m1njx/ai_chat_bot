@@ -1,0 +1,244 @@
+/* 토스(Toss) 디자인 시스템 — Streamlit판에서 이식 */
+:root {
+  --toss-blue: #0064FF;
+  --toss-blue-light: #E8F3FF;
+  --toss-bg: #F2F4F6;
+  --toss-card: #FFFFFF;
+  --toss-text: #191F28;
+  --toss-subtext: #4E5968;
+  --toss-border: #E5E8EB;
+  --toss-shadow: rgba(0, 0, 0, 0.04);
+  --toss-danger: #F04452;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --toss-blue: #3182F6;
+    --toss-blue-light: #1A2333;
+    --toss-bg: #101012;
+    --toss-card: #1C1C1E;
+    --toss-text: #F9FAFB;
+    --toss-subtext: #ADB5BD;
+    --toss-border: #2C2C2E;
+    --toss-shadow: rgba(0, 0, 0, 0.2);
+    --toss-danger: #FF6B76;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; margin: 0; }
+
+body {
+  font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--toss-bg);
+  color: var(--toss-text);
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button { font-family: inherit; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+/* ── 레이아웃 ── */
+.layout { display: flex; height: 100%; }
+
+.sidebar {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--toss-card);
+  border-right: 1px solid var(--toss-border);
+  display: flex;
+  flex-direction: column;
+  padding: 20px 16px;
+  gap: 8px;
+  overflow-y: auto;
+  transition: margin-left 0.25s ease;
+}
+.sidebar.collapsed { margin-left: -280px; }
+
+.sidebar h2 { font-size: 17px; margin: 0 0 4px 4px; }
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 28px 0;
+}
+
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--toss-subtext);
+  border-radius: 10px;
+  padding: 6px 9px;
+  font-size: 16px;
+  line-height: 1;
+}
+.icon-btn:hover { background: var(--toss-blue-light); color: var(--toss-blue); }
+
+/* ── 사이드바 버튼 ── */
+.side-btn {
+  background: transparent;
+  border: none;
+  color: var(--toss-subtext);
+  border-radius: 12px;
+  padding: 9px 12px;
+  font-weight: 500;
+  text-align: left;
+  width: 100%;
+  font-size: 14px;
+  transition: background 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.side-btn:hover { background: var(--toss-blue-light); color: var(--toss-blue); }
+.side-btn.active { background: var(--toss-blue-light); color: var(--toss-blue); font-weight: 600; }
+.side-btn.primary {
+  background: var(--toss-blue); color: #fff; text-align: center; font-weight: 600;
+}
+.side-btn.primary:hover { background: var(--toss-blue); filter: brightness(1.08); }
+
+.chat-row { display: flex; align-items: center; gap: 2px; }
+.chat-row .side-btn { flex: 1; min-width: 0; }
+.chat-row .icon-btn { opacity: 0; font-size: 13px; padding: 6px; }
+.chat-row:hover .icon-btn, .chat-row .icon-btn:focus-visible { opacity: 1; }
+
+.divider { height: 1px; background: var(--toss-border); margin: 8px 0; border: 0; }
+.spacer { flex: 1; }
+
+.rename-row { display: flex; gap: 6px; align-items: center; }
+.rename-row input {
+  flex: 1; min-width: 0; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--toss-border); background: var(--toss-bg); color: var(--toss-text);
+  font-size: 14px; font-family: inherit;
+}
+
+/* ── 채팅 ── */
+.chat-scroll { flex: 1; overflow-y: auto; padding: 8px 28px 0; }
+.chat-inner { max-width: 860px; margin: 0 auto; }
+
+.page-title { font-size: 26px; font-weight: 700; margin: 8px 0 4px; }
+.page-sub { color: var(--toss-subtext); font-size: 15px; margin: 0 0 20px; }
+
+.msg { display: flex; margin: 10px 0; }
+.msg.user { justify-content: flex-end; }
+
+.bubble {
+  max-width: 80%;
+  padding: 12px 16px;
+  font-size: 15px;
+  line-height: 1.62;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.bubble.user {
+  background: var(--toss-blue); color: #fff;
+  border-radius: 20px 20px 4px 20px;
+  box-shadow: 0 4px 12px var(--toss-shadow);
+  white-space: pre-wrap;
+}
+.bubble.assistant {
+  background: var(--toss-card); color: var(--toss-text);
+  border-radius: 20px 20px 20px 4px;
+  border: 1px solid var(--toss-border);
+  box-shadow: 0 2px 8px var(--toss-shadow);
+}
+.bubble.assistant > :first-child { margin-top: 0; }
+.bubble.assistant > :last-child { margin-bottom: 0; }
+.bubble.assistant p { margin: 0 0 10px; }
+.bubble.assistant ul, .bubble.assistant ol { margin: 0 0 10px; padding-left: 20px; }
+.bubble.assistant li { margin: 3px 0; }
+.bubble.assistant code {
+  background: var(--toss-bg); padding: 2px 5px; border-radius: 5px; font-size: 13px;
+}
+.bubble.assistant pre {
+  background: var(--toss-bg); padding: 12px; border-radius: 12px;
+  overflow-x: auto; margin: 0 0 10px;
+}
+.bubble.assistant pre code { background: none; padding: 0; }
+.bubble.assistant table { border-collapse: collapse; display: block; overflow-x: auto; }
+.bubble.assistant th, .bubble.assistant td {
+  border: 1px solid var(--toss-border); padding: 6px 10px;
+}
+
+.bubble.error { border-color: var(--toss-danger); color: var(--toss-danger); }
+
+.provider-tag {
+  display: inline-block; margin-top: 8px; font-size: 12px;
+  color: var(--toss-subtext); background: var(--toss-bg);
+  border-radius: 999px; padding: 2px 10px;
+}
+
+/* 타이핑 커서 */
+.caret {
+  display: inline-block; width: 7px; height: 15px; margin-left: 2px;
+  background: var(--toss-blue); vertical-align: -2px;
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { to { visibility: hidden; } }
+
+/* ── 입력창 ── */
+.composer-wrap { padding: 12px 28px 24px; }
+.composer {
+  max-width: 860px; margin: 0 auto;
+  display: flex; align-items: flex-end; gap: 8px;
+  background: var(--toss-card);
+  border: 1px solid var(--toss-border);
+  border-radius: 18px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 30px var(--toss-shadow);
+}
+.composer textarea {
+  flex: 1; border: none; outline: none; resize: none;
+  background: transparent; color: var(--toss-text);
+  font-family: inherit; font-size: 15px; line-height: 1.55;
+  max-height: 180px; padding: 4px 2px;
+}
+.send-btn {
+  border: none; border-radius: 12px; background: var(--toss-blue); color: #fff;
+  width: 34px; height: 34px; flex-shrink: 0; font-size: 15px;
+}
+
+/* ── 대시보드 ── */
+.toss-card {
+  background: var(--toss-card); padding: 20px; border-radius: 20px;
+  border: 1px solid var(--toss-border); box-shadow: 0 4px 20px var(--toss-shadow);
+  margin-bottom: 12px;
+}
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.stat-label { font-size: 14px; color: var(--toss-subtext); margin-bottom: 4px; }
+.stat-value { font-size: 24px; font-weight: 700; color: var(--toss-blue); }
+.stat-value span { font-size: 14px; font-weight: 400; color: #8B95A1; }
+.sample { font-size: 14px; color: var(--toss-subtext); line-height: 1.6; word-break: break-word; }
+
+.banner {
+  padding: 12px 16px; border-radius: 14px; margin-bottom: 12px; font-size: 14px;
+  background: var(--toss-blue-light); color: var(--toss-blue);
+}
+.banner.error { background: rgba(240, 68, 82, 0.12); color: var(--toss-danger); }
+
+/* ── 로그인 ── */
+.login-wrap { height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.login-card { width: 100%; max-width: 360px; }
+.login-card input {
+  width: 100%; padding: 12px 14px; border-radius: 12px; margin: 12px 0;
+  border: 1px solid var(--toss-border); background: var(--toss-bg);
+  color: var(--toss-text); font-size: 15px; font-family: inherit;
+}
+
+@media (max-width: 720px) {
+  .sidebar { position: absolute; z-index: 20; height: 100%; }
+  .chat-scroll, .composer-wrap { padding-left: 16px; padding-right: 16px; }
+  .topbar { padding-left: 16px; padding-right: 16px; }
+  .bubble { max-width: 90%; }
+}
