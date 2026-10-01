@@ -69,9 +69,8 @@ export default function App() {
 
   async function renameChat(id, title) {
     try {
-      const { id: newId } = await api.renameChat(id, title)
-      setChats((prev) => prev.map((c) => (c.id === id ? { ...c, id: newId } : c)))
-      setCurrentId((prev) => (prev === id ? newId : prev))
+      const res = await api.renameChat(id, title)
+      setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title: res.title } : c)))
     } catch (err) { setBanner(err.message) }
   }
 
@@ -159,7 +158,7 @@ export default function App() {
           <Dashboard />
         ) : (
           <ChatView
-            title={current?.id ?? '새 대화'}
+            title={current?.title || current?.id || '새 대화'}
             messages={current?.messages ?? []}
             pending={pending}
             onSend={send}

@@ -4,6 +4,7 @@ import time
 import hmac
 import uuid
 import html
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 import core   # UI에 의존하지 않는 공통 로직 (FastAPI 백엔드와 공유)
@@ -189,11 +190,11 @@ def warm_embedder():
 warm_embedder()
 
 
-def generate_reply(question):
+def generate_reply(question, history=None):
     """(답변, 오류메시지) 반환. Streamlit 제어 예외를 삼키지 않도록 st.* 호출을 하지 않는다."""
     try:
         text, _provider = llm.generate(
-            core.build_prompt(question), system_instruction=core.SYSTEM_INSTRUCTION
+            core.build_prompt(question, history=history), system_instruction=core.SYSTEM_INSTRUCTION
         )
     except llm.LLMError as e:
         print(f"⚠️ 모든 LLM 제공자 실패: {e}", flush=True)
@@ -210,7 +211,13 @@ USER_KEY = get_user_key()
 if "all_chats" not in st.session_state:
     st.session_state.all_chats = core.load_chats(USER_KEY)
 if "current_chat_id" not in st.session_state:
-    st.session_state.current_chat_id = next(iter(st.session_state.all_chats), None) or "새 대화"
+    if st.session_state.all_chats:
+        st.session_state.current_chat_id = next(iter(st.session_state.all_chats))
+    else:
+        init_chat = core.new_chat()
+        st.session_state.all_chats[init_chat["id"]] = init_chat
+        st.session_state.current_chat_id = init_chat["id"]
+        core.save_chats(USER_KEY, st.session_state.all_chats)
 if "rename_target" not in st.session_state:
     st.session_state.rename_target = None
 
@@ -222,34 +229,32 @@ def persist():
 with st.sidebar:
     st.markdown("<h2>📂 대화 목록</h2>", unsafe_allow_html=True)
     if st.button("➕ 새 대화 시작", width="stretch"):
-        new_id = core.unique_name(f"대화 {time.strftime('%H:%M:%S')}", st.session_state.all_chats)
-        st.session_state.all_chats[new_id] = []
-        st.session_state.current_chat_id = new_id
+        new_item = core.new_chat()
+        st.session_state.all_chats[new_item["id"]] = new_item
+        st.session_state.current_chat_id = new_item["id"]
         persist()
         st.rerun()
     st.divider()
 
     for cid in list(st.session_state.all_chats.keys()):
         is_active = (cid == st.session_state.current_chat_id)
+        chat_item = st.session_state.all_chats.get(cid, {})
+        chat_title = chat_item.get("title", cid) if isinstance(chat_item, dict) else cid
 
         if st.session_state.rename_target == cid:
-            new_name = st.text_input("수정", value=cid, key=f"in_{cid}", label_visibility="collapsed")
+            new_name = st.text_input("수정", value=chat_title, key=f"in_{cid}", label_visibility="collapsed")
             c1, c2 = st.columns(2)
             confirm = c1.button("확인", key=f"ok_{cid}")
             cancel = c2.button("취소", key=f"cn_{cid}")
             if confirm:
                 new_name = (new_name or "").strip()
-                if new_name and new_name != cid and new_name in st.session_state.all_chats:
-                    st.error("같은 이름의 대화가 이미 있습니다.")
-                else:
-                    if new_name and new_name != cid:
-                        st.session_state.all_chats = core.rename_chat(
-                            st.session_state.all_chats, cid, new_name
-                        )
-                        st.session_state.current_chat_id = new_name
-                        persist()
-                    st.session_state.rename_target = None
-                    st.rerun()
+                if new_name:
+                    st.session_state.all_chats = core.rename_chat(
+                        st.session_state.all_chats, cid, new_name
+                    )
+                    persist()
+                st.session_state.rename_target = None
+                st.rerun()
             if cancel:
                 st.session_state.rename_target = None
                 st.rerun()
@@ -257,7 +262,7 @@ with st.sidebar:
             with st.container():
                 col_btn, col_tool = st.columns([4, 1])
                 with col_btn:
-                    if st.button(f"{'📍' if is_active else '💬'} {cid[:10]}", key=f"sel_{cid}", width="stretch"):
+                    if st.button(f"{'📍' if is_active else '💬'} {chat_title[:10]}", key=f"sel_{cid}", width="stretch"):
                         st.session_state.current_chat_id = cid
                         st.rerun()
                 with col_tool:
@@ -280,7 +285,16 @@ with st.sidebar:
         st.rerun()
 
 # --- [ 메인 화면 구성 ] ---
-messages = st.session_state.all_chats.get(st.session_state.current_chat_id, [])
+current_chat = st.session_state.all_chats.get(st.session_state.current_chat_id)
+if isinstance(current_chat, dict):
+    messages = current_chat.get("messages", [])
+    current_title = current_chat.get("title", st.session_state.current_chat_id)
+elif isinstance(current_chat, list):
+    messages = current_chat
+    current_title = st.session_state.current_chat_id
+else:
+    messages = []
+    current_title = st.session_state.current_chat_id or "새 대화"
 
 if st.session_state.get("show_db"):
     st.markdown("<h1>📁 통합 지식 저장소</h1>", unsafe_allow_html=True)
@@ -328,7 +342,7 @@ if st.session_state.get("show_db"):
         st.session_state.show_db = False
         st.rerun()
 else:
-    st.markdown(f"<h1>🧠 {esc(st.session_state.current_chat_id)}</h1>", unsafe_allow_html=True)
+    st.markdown(f"<h1>🧠 {esc(current_title)}</h1>", unsafe_allow_html=True)
     st.markdown(
         "<p style='color: var(--toss-subtext); font-size: 15px;'>학습된 지식을 기반으로 전문적인 답변을 제공합니다.</p>",
         unsafe_allow_html=True,
@@ -347,7 +361,11 @@ else:
             sanitized = core.sanitize_input(prompt)
             if sanitized:
                 messages.append({"role": "user", "content": sanitized})
-                st.session_state.all_chats[st.session_state.current_chat_id] = messages
+                if isinstance(current_chat, dict):
+                    current_chat["messages"] = messages
+                    current_chat["updated_at"] = datetime.now(timezone.utc).isoformat()
+                else:
+                    st.session_state.all_chats[st.session_state.current_chat_id] = messages
                 persist()
                 st.rerun()
 
@@ -355,7 +373,8 @@ else:
         answer, error = None, None
         with st.chat_message("assistant"):
             with st.spinner("분석 중..."):
-                answer, error = generate_reply(messages[-1]["content"])
+                prior_history = messages[:-1]
+                answer, error = generate_reply(messages[-1]["content"], history=prior_history)
             if error:
                 st.error(error)
                 reply = f"⚠️ {error}"
@@ -364,6 +383,10 @@ else:
                 reply = answer
         # st.rerun()은 BaseException을 던지므로 반드시 try 밖에서 호출한다
         messages.append({"role": "assistant", "content": reply})
-        st.session_state.all_chats[st.session_state.current_chat_id] = messages
+        if isinstance(current_chat, dict):
+            current_chat["messages"] = messages
+            current_chat["updated_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            st.session_state.all_chats[st.session_state.current_chat_id] = messages
         persist()
         st.rerun()

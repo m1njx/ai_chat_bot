@@ -6,15 +6,16 @@ export default function Sidebar({
   const [renaming, setRenaming] = useState(null)
   const [draft, setDraft] = useState('')
 
-  function startRename(id) {
-    setRenaming(id)
-    setDraft(id)
+  function startRename(chat) {
+    setRenaming(chat.id)
+    setDraft(chat.title || chat.id || '')
   }
 
-  async function commitRename(id) {
+  async function commitRename(chat) {
     const next = draft.trim()
     setRenaming(null)
-    if (next && next !== id) await onRename(id, next)
+    const currentTitle = chat.title || chat.id
+    if (next && next !== currentTitle) await onRename(chat.id, next)
   }
 
   return (
@@ -29,19 +30,20 @@ export default function Sidebar({
         </div>
       )}
 
-      {chats.map((chat) =>
-        renaming === chat.id ? (
+      {chats.map((chat) => {
+        const displayTitle = chat.title || chat.id
+        return renaming === chat.id ? (
           <div className="rename-row" key={chat.id}>
             <input
               value={draft}
               autoFocus
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') commitRename(chat.id)
+                if (e.key === 'Enter') commitRename(chat)
                 if (e.key === 'Escape') setRenaming(null)
               }}
             />
-            <button className="icon-btn" title="확인" onClick={() => commitRename(chat.id)}>✓</button>
+            <button className="icon-btn" title="확인" onClick={() => commitRename(chat)}>✓</button>
             <button className="icon-btn" title="취소" onClick={() => setRenaming(null)}>✕</button>
           </div>
         ) : (
@@ -49,15 +51,15 @@ export default function Sidebar({
             <button
               className={`side-btn${chat.id === currentId && !showDashboard ? ' active' : ''}`}
               onClick={() => onSelect(chat.id)}
-              title={chat.id}
+              title={displayTitle}
             >
-              {chat.id === currentId && !showDashboard ? '📍' : '💬'} {chat.id}
+              {chat.id === currentId && !showDashboard ? '📍' : '💬'} {displayTitle}
             </button>
-            <button className="icon-btn" title="이름 수정" onClick={() => startRename(chat.id)}>✏️</button>
+            <button className="icon-btn" title="이름 수정" onClick={() => startRename(chat)}>✏️</button>
             <button className="icon-btn" title="삭제" onClick={() => onDelete(chat.id)}>🗑️</button>
           </div>
         )
-      )}
+      })}
 
       <div className="spacer" />
       <hr className="divider" />

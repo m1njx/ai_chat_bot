@@ -25,6 +25,9 @@ OPENAI_MODEL_ENV = os.getenv("OPENAI_MODEL")
 GEMINI_TIMEOUT_MS = 60_000      # google-genai는 밀리초
 OPENAI_TIMEOUT_S = 60.0         # openai는 초
 
+LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.7"))
+LLM_MAX_OUTPUT_TOKENS = int(os.getenv("LLM_MAX_OUTPUT_TOKENS", "2048"))
+
 # LM Studio: Developer 탭에서 Status를 Running으로 켜면 기본 http://127.0.0.1:1234
 # localhost는 환경에 따라 IPv6(::1)로 풀려 접속이 안 될 수 있어 127.0.0.1을 기본으로 둔다.
 LMSTUDIO_BASE_URL = os.getenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1234/v1")
@@ -118,6 +121,8 @@ def _gemini_generate(prompt, system_instruction, timeout_ms):
     from google.genai import types
     config = types.GenerateContentConfig(
         http_options=types.HttpOptions(timeout=timeout_ms),
+        temperature=LLM_TEMPERATURE,
+        max_output_tokens=LLM_MAX_OUTPUT_TOKENS,
     )
     if system_instruction:
         config.system_instruction = system_instruction
@@ -142,7 +147,12 @@ def _openai_compatible_generate(client, model, prompt, system_instruction):
     if system_instruction:
         messages.append({"role": "system", "content": system_instruction})
     messages.append({"role": "user", "content": prompt})
-    response = client.chat.completions.create(model=model, messages=messages)
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=LLM_TEMPERATURE,
+        max_tokens=LLM_MAX_OUTPUT_TOKENS,
+    )
     if not response.choices:
         raise LLMError("빈 응답")
     text = (response.choices[0].message.content or "").strip()
@@ -294,6 +304,8 @@ def _gemini_stream(prompt, system_instruction, timeout_ms):
     from google.genai import types
     config = types.GenerateContentConfig(
         http_options=types.HttpOptions(timeout=timeout_ms),
+        temperature=LLM_TEMPERATURE,
+        max_output_tokens=LLM_MAX_OUTPUT_TOKENS,
     )
     if system_instruction:
         config.system_instruction = system_instruction
@@ -311,7 +323,13 @@ def _openai_compatible_stream(client, model, prompt, system_instruction):
     if system_instruction:
         messages.append({"role": "system", "content": system_instruction})
     messages.append({"role": "user", "content": prompt})
-    for chunk in client.chat.completions.create(model=model, messages=messages, stream=True):
+    for chunk in client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=LLM_TEMPERATURE,
+        max_tokens=LLM_MAX_OUTPUT_TOKENS,
+        stream=True,
+    ):
         if not chunk.choices:
             continue
         text = getattr(chunk.choices[0].delta, "content", None)

@@ -168,18 +168,37 @@ def login(body: LoginBody, request: Request):
 @app.get("/api/chats")
 def list_chats(authorization: str | None = Header(default=None)):
     chats = core.load_chats(user_key(authorization))
-    return {"chats": [{"id": cid, "messages": msgs} for cid, msgs in chats.items()]}
+    out = []
+    for cid, chat in chats.items():
+        if isinstance(chat, dict):
+            out.append({
+                "id": chat.get("id", cid),
+                "title": chat.get("title", f"대화 {cid[:8]}"),
+                "created_at": chat.get("created_at"),
+                "updated_at": chat.get("updated_at"),
+                "messages": chat.get("messages", []),
+            })
+        elif isinstance(chat, list):
+            out.append({
+                "id": cid,
+                "title": cid,
+                "messages": chat,
+            })
+    return {"chats": out}
 
 
 @app.post("/api/chats")
 def create_chat(body: ChatCreateBody, authorization: str | None = Header(default=None)):
     key = user_key(authorization)
     chats = core.load_chats(key)
-    title = core.sanitize_input(body.title or "") or f"대화 {time.strftime('%H:%M:%S')}"
-    title = core.unique_name(title, chats)
-    chats[title] = []
+    title = core.sanitize_input(body.title or "")
+    if not title:
+        default_title = f"대화 {time.strftime('%H:%M:%S')}"
+        title = core.unique_title(default_title, chats)
+    chat = core.new_chat(title=title)
+    chats[chat["id"]] = chat
     core.save_chats(key, chats)
-    return {"id": title, "messages": []}
+    return {"id": chat["id"], "title": chat["title"], "messages": []}
 
 
 @app.patch("/api/chats/{chat_id}")
@@ -191,10 +210,14 @@ def rename(chat_id: str, body: ChatRenameBody, authorization: str | None = Heade
     new_title = core.sanitize_input(body.title)
     if not new_title:
         raise HTTPException(status_code=400, detail="이름이 비어 있습니다.")
-    if new_title != chat_id and new_title in chats:
-        raise HTTPException(status_code=409, detail="같은 이름의 대화가 이미 있습니다.")
-    core.save_chats(key, core.rename_chat(chats, chat_id, new_title))
-    return {"id": new_title}
+    chat = chats[chat_id]
+    if isinstance(chat, dict):
+        chat["title"] = new_title
+        chat["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        chats[chat_id] = {"id": chat_id, "title": new_title, "messages": chat}
+    core.save_chats(key, chats)
+    return {"id": chat_id, "title": new_title}
 
 
 @app.delete("/api/chats/{chat_id}")
@@ -253,16 +276,30 @@ def chat_stream(body: MessageBody, request: Request,
 
     chats = core.load_chats(key)
     if body.chat_id not in chats:
-        chats[body.chat_id] = []
-    chats[body.chat_id].append({"role": "user", "content": question})
+        chats[body.chat_id] = core.new_chat(chat_id=body.chat_id)
+
+    chat = chats[body.chat_id]
+    if isinstance(chat, list):
+        chat = {"id": body.chat_id, "title": body.chat_id, "messages": chat}
+        chats[body.chat_id] = chat
+
+    # Multi-turn Memory: 현재 질문을 추가하기 전의 직전 대화 기록 추출
+    prior_history = list(chat.get("messages", []))
+
+    # 사용자 메시지 저장
+    chat.setdefault("messages", []).append({"role": "user", "content": question})
+    chat["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     core.save_chats(key, chats)
+
+    # Multi-turn 프롬프트 생성 (RAG 지식 + 이전 대화 맥락 + 현재 질문)
+    prompt = core.build_prompt(question, history=prior_history)
 
     def event_stream():
         # 동기 제너레이터를 넘기면 Starlette이 스레드풀에서 돌리므로 이벤트 루프를 막지 않는다
         parts = []
         try:
             for ev in llm.generate_stream(
-                core.build_prompt(question), system_instruction=core.SYSTEM_INSTRUCTION
+                prompt, system_instruction=core.SYSTEM_INSTRUCTION
             ):
                 if ev["type"] == "chunk":
                     # 조각 단위로도 비밀값을 가린다. 조각 경계에 걸쳐 잘린 비밀값은
@@ -284,8 +321,10 @@ def chat_stream(body: MessageBody, request: Request,
         answer = core.filter_output("".join(parts))
         if answer:
             saved = core.load_chats(key)
-            saved.setdefault(body.chat_id, []).append({"role": "assistant", "content": answer})
-            core.save_chats(key, saved)
+            if body.chat_id in saved and isinstance(saved[body.chat_id], dict):
+                saved[body.chat_id].setdefault("messages", []).append({"role": "assistant", "content": answer})
+                saved[body.chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                core.save_chats(key, saved)
         yield _sse({"type": "done", "content": answer})
 
     return StreamingResponse(
