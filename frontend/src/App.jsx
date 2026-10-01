@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, streamChat, setToken } from './api'
 import Sidebar from './components/Sidebar'
 import ChatView from './components/ChatView'
@@ -13,6 +13,14 @@ export default function App() {
   const [showDashboard, setShowDashboard] = useState(false)
   const [collapsed, setCollapsed] = useState(false)
   const [banner, setBanner] = useState('')
+  const abortRef = useRef(null)
+
+  const stop = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort()
+      abortRef.current = null
+    }
+  }, [])
 
   const checkSession = useCallback(async () => {
     try {
@@ -67,7 +75,14 @@ export default function App() {
 
   const current = chats.find((c) => c.id === currentId)
 
+  const handleSelectChat = (id) => {
+    stop()
+    setCurrentId(id)
+    setShowDashboard(false)
+  }
+
   async function createChat() {
+    stop()
     try {
       const chat = await api.createChat()
       setChats((prev) => [...prev, chat])
@@ -90,6 +105,9 @@ export default function App() {
   }
 
   async function deleteChat(id) {
+    if (currentId === id) {
+      stop()
+    }
     try {
       await api.deleteChat(id)
       setChats((prev) => {
@@ -104,6 +122,8 @@ export default function App() {
   }
 
   async function send(text) {
+    stop()
+
     let chatId = currentId
     if (!chatId) {
       try {
@@ -124,13 +144,19 @@ export default function App() {
     )
     setPending({ text: '', provider: null, error: false })
 
+    const controller = new AbortController()
+    abortRef.current = controller
+    let accumulatedText = ''
+
     try {
       await streamChat({
         chatId,
         message: text,
+        signal: controller.signal,
         onEvent: (ev) => {
           if (ev.type === 'chunk') {
-            setPending((p) => ({ ...p, text: (p?.text ?? '') + ev.text }))
+            accumulatedText += ev.text
+            setPending((p) => ({ ...p, text: accumulatedText }))
           } else if (ev.type === 'provider') {
             setPending((p) => ({ ...p, provider: ev.provider }))
           } else if (ev.type === 'done') {
@@ -147,10 +173,35 @@ export default function App() {
         },
       })
     } catch (err) {
+      if (err?.name === 'AbortError' || err?.message?.toLowerCase().includes('abort')) {
+        // 사용자가 의도적으로 스트리밍을 중단한 경우
+        if (accumulatedText) {
+          setChats((prev) =>
+            prev.map((c) => (c.id === chatId
+              ? { ...c, messages: [...c.messages, { role: 'assistant', content: accumulatedText }] }
+              : c))
+          )
+        }
+        setPending(null)
+        return
+      }
       if (handleAuthError(err)) return
-      setPending({ text: err.message, provider: null, error: true })
+
+      let errMsg = err.message || '오류가 발생했습니다.'
+      if (err.status === 429 || errMsg.includes('429')) {
+        errMsg = '요청이 너무 많습니다. 잠시 후 다시 시도해주세요. (Rate Limit)'
+      } else if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError')) {
+        errMsg = '서버에 연결할 수 없습니다. 백엔드 서버 상태를 확인해주세요.'
+      }
+      setPending({ text: errMsg, provider: null, error: true })
+    } finally {
+      if (abortRef.current === controller) {
+        abortRef.current = null
+      }
     }
   }
+
+  const isStreaming = Boolean(pending && !pending.error)
 
   return (
     <div className="layout">
@@ -159,7 +210,7 @@ export default function App() {
         chats={chats}
         currentId={currentId}
         showDashboard={showDashboard}
-        onSelect={(id) => { setCurrentId(id); setShowDashboard(false) }}
+        onSelect={handleSelectChat}
         onCreate={createChat}
         onRename={renameChat}
         onDelete={deleteChat}
@@ -185,7 +236,9 @@ export default function App() {
             messages={current?.messages ?? []}
             pending={pending}
             onSend={send}
-            disabled={!!pending && !pending.error}
+            disabled={isStreaming}
+            isStreaming={isStreaming}
+            onStop={stop}
           />
         )}
       </main>

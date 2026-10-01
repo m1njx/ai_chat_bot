@@ -66,24 +66,28 @@ export async function streamChat({ chatId, message, signal, onEvent }) {
   const decoder = new TextDecoder()
   let buffer = ''
 
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
 
-    // SSE 이벤트는 빈 줄로 구분된다
-    let idx
-    while ((idx = buffer.indexOf('\n\n')) !== -1) {
-      const raw = buffer.slice(0, idx)
-      buffer = buffer.slice(idx + 2)
-      for (const line of raw.split('\n')) {
-        if (!line.startsWith('data:')) continue
-        try {
-          onEvent(JSON.parse(line.slice(5).trim()))
-        } catch {
-          /* 잘린 조각은 무시 */
+      // SSE 이벤트는 빈 줄로 구분된다
+      let idx
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const raw = buffer.slice(0, idx)
+        buffer = buffer.slice(idx + 2)
+        for (const line of raw.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          try {
+            onEvent(JSON.parse(line.slice(5).trim()))
+          } catch {
+            /* 잘린 조각은 무시 */
+          }
         }
       }
     }
+  } finally {
+    try { reader.releaseLock() } catch { /* ignore */ }
   }
 }

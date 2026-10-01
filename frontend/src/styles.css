@@ -27,7 +27,7 @@
 
 * { box-sizing: border-box; }
 
-html, body, #root { height: 100%; margin: 0; }
+html, body, #root { height: 100%; min-height: 100dvh; margin: 0; }
 
 body {
   font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, sans-serif;
@@ -41,7 +41,7 @@ button { font-family: inherit; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 /* ── 레이아웃 ── */
-.layout { display: flex; height: 100%; }
+.layout { display: flex; height: 100%; height: 100dvh; }
 
 .sidebar {
   width: 280px;
@@ -135,6 +135,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 
 .bubble {
   max-width: 80%;
+  min-width: 0;
   padding: 12px 16px;
   font-size: 15px;
   line-height: 1.62;
@@ -158,17 +159,105 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .bubble.assistant p { margin: 0 0 10px; }
 .bubble.assistant ul, .bubble.assistant ol { margin: 0 0 10px; padding-left: 20px; }
 .bubble.assistant li { margin: 3px 0; }
-.bubble.assistant code {
-  background: var(--toss-bg); padding: 2px 5px; border-radius: 5px; font-size: 13px;
+
+/* 인라인 코드 */
+.bubble.assistant code.inline-code {
+  background: var(--toss-bg);
+  color: var(--toss-blue);
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 0.9em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
-.bubble.assistant pre {
-  background: var(--toss-bg); padding: 12px; border-radius: 12px;
-  overflow-x: auto; margin: 0 0 10px;
+
+/* 코드 블록 하이라이팅 컨테이너 */
+.code-block-wrap {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 12px 0;
+  background: #1e1e1e;
+  border: 1px solid var(--toss-border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
 }
-.bubble.assistant pre code { background: none; padding: 0; }
-.bubble.assistant table { border-collapse: collapse; display: block; overflow-x: auto; }
-.bubble.assistant th, .bubble.assistant td {
-  border: 1px solid var(--toss-border); padding: 6px 10px;
+.code-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  background: #252526;
+  border-bottom: 1px solid #333333;
+  color: #858585;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+.code-lang {
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #cccccc;
+}
+.copy-code-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #d4d4d4;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-family: inherit;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.copy-code-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+.copy-code-btn.copied {
+  background: var(--toss-blue);
+  border-color: var(--toss-blue);
+  color: #ffffff;
+}
+.code-block-wrap pre {
+  margin: 0 !important;
+  padding: 12px 14px !important;
+  background: transparent !important;
+  border-radius: 0 !important;
+  overflow-x: auto;
+}
+
+/* GFM 표 (Table) 래퍼 */
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin: 12px 0;
+  border-radius: 10px;
+  border: 1px solid var(--toss-border);
+}
+.table-wrap table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  display: table !important;
+  margin: 0 !important;
+}
+.table-wrap th, .table-wrap td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--toss-border);
+  border-right: 1px solid var(--toss-border);
+}
+.table-wrap th:last-child, .table-wrap td:last-child {
+  border-right: none;
+}
+.table-wrap th {
+  background: var(--toss-bg);
+  font-weight: 600;
+  color: var(--toss-text);
+}
+.table-wrap tr:last-child td {
+  border-bottom: none;
 }
 
 .bubble.error { border-color: var(--toss-danger); color: var(--toss-danger); }
@@ -179,7 +268,32 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   border-radius: 999px; padding: 2px 10px;
 }
 
-/* 타이핑 커서 */
+/* 첫 토큰 로딩 인디케이터 (Typing Dots) */
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 2px;
+  min-height: 24px;
+}
+.typing-indicator span {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--toss-subtext);
+  border-radius: 50%;
+  animation: typingBounce 1.2s infinite ease-in-out both;
+}
+.typing-indicator span:nth-child(1) { animation-delay: -0.32s; }
+.typing-indicator span:nth-child(2) { animation-delay: -0.16s; }
+.typing-indicator span:nth-child(3) { animation-delay: 0s; }
+
+@keyframes typingBounce {
+  0%, 80%, 100% { transform: scale(0); opacity: 0.35; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+/* 스트리밍 중 블링크 커서 */
 .caret {
   display: inline-block; width: 7px; height: 15px; margin-left: 2px;
   background: var(--toss-blue); vertical-align: -2px;
@@ -207,6 +321,15 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
 .send-btn {
   border: none; border-radius: 12px; background: var(--toss-blue); color: #fff;
   width: 34px; height: 34px; flex-shrink: 0; font-size: 15px;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s ease;
+}
+.send-btn.stop-btn {
+  background: #4E5968;
+  font-size: 13px;
+}
+.send-btn.stop-btn:hover {
+  background: var(--toss-danger);
 }
 
 /* ── 대시보드 ── */
@@ -240,5 +363,7 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   .sidebar { position: absolute; z-index: 20; height: 100%; }
   .chat-scroll, .composer-wrap { padding-left: 16px; padding-right: 16px; }
   .topbar { padding-left: 16px; padding-right: 16px; }
-  .bubble { max-width: 90%; }
+  .bubble { max-width: 92%; }
+  .code-header { padding: 6px 10px; font-size: 11px; }
+  .table-wrap th, .table-wrap td { padding: 6px 8px; font-size: 13px; }
 }

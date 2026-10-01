@@ -381,6 +381,9 @@ def chat_stream(body: MessageBody, request: Request,
     def event_stream():
         # 동기 제너레이터를 넘기면 Starlette이 스레드풀에서 돌리므로 이벤트 루프를 막지 않는다
         parts = []
+        answer = ""
+        saved_answer = False
+        has_error = False
         try:
             for ev in llm.generate_stream(
                 prompt, system_instruction=core.SYSTEM_INSTRUCTION
@@ -391,21 +394,28 @@ def chat_stream(body: MessageBody, request: Request,
                 elif ev["type"] == "provider":
                     yield _sse(ev)
                 else:
+                    has_error = True
                     yield _sse({"type": "error", "message": "AI 호출 중 에러가 발생했습니다."})
                     print(f"⚠️ 답변 생성 실패: {ev.get('message')}", flush=True)
                     return
         except Exception as e:
+            has_error = True
             print(f"⚠️ 스트림 처리 중 오류: {e}", flush=True)
             yield _sse({"type": "error", "message": "AI 호출 중 에러가 발생했습니다."})
             return
+        finally:
+            if not saved_answer and not has_error:
+                saved_answer = True
+                answer = core.filter_output("".join(parts))
+                if answer:
+                    def _append_assistant(chats):
+                        if body.chat_id in chats and isinstance(chats[body.chat_id], dict):
+                            msgs = chats[body.chat_id].setdefault("messages", [])
+                            if not msgs or msgs[-1].get("role") != "assistant":
+                                msgs.append({"role": "assistant", "content": answer})
+                                chats[body.chat_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    core.modify_chats(key, _append_assistant)
 
-        answer = core.filter_output("".join(parts))
-        if answer:
-            def _append_assistant(chats):
-                if body.chat_id in chats and isinstance(chats[body.chat_id], dict):
-                    chats[body.chat_id].setdefault("messages", []).append({"role": "assistant", "content": answer})
-                    chats[body.chat_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
-            core.modify_chats(key, _append_assistant)
         yield _sse({"type": "done", "content": answer})
 
     return StreamingResponse(
