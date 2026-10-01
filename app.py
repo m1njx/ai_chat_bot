@@ -358,11 +358,12 @@ else:
                 answer, error = generate_reply(messages[-1]["content"])
             if error:
                 st.error(error)
+                reply = f"⚠️ {error}"
             else:
                 st.markdown(answer)
+                reply = answer
         # st.rerun()은 BaseException을 던지므로 반드시 try 밖에서 호출한다
-        if answer:
-            messages.append({"role": "assistant", "content": answer})
-            st.session_state.all_chats[st.session_state.current_chat_id] = messages
-            persist()
-            st.rerun()
+        messages.append({"role": "assistant", "content": reply})
+        st.session_state.all_chats[st.session_state.current_chat_id] = messages
+        persist()
+        st.rerun()

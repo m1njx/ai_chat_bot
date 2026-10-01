@@ -197,17 +197,27 @@ def rebuild_knowledge():
     documents = _read_documents()
     if not documents:
         return False
+    tmp_db = f"{DB_PATH}.tmp"
+    tmp_docs = f"{DOCS_PATH}.tmp"
     try:
         embeddings = get_embedder().encode(documents)
         index = faiss.IndexFlatL2(embeddings.shape[1])
         index.add(np.array(embeddings).astype("float32"))
-        faiss.write_index(index, DB_PATH)
-        with open(DOCS_PATH, "w", encoding="utf-8") as f:
+        faiss.write_index(index, tmp_db)
+        with open(tmp_docs, "w", encoding="utf-8") as f:
             json.dump(documents, f, ensure_ascii=False)
+        os.replace(tmp_db, DB_PATH)
+        os.replace(tmp_docs, DOCS_PATH)
         _index_cache["key"] = None   # 다음 조회 때 새로 읽도록 무효화
         return True
     except Exception as e:
         print(f"⚠️ 지식 인덱스 재구축 실패: {e}", flush=True)
+        for p in (tmp_db, tmp_docs):
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
         return False
 
 

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 import llm   # Gemini → LM Studio → OpenAI 자동 전환 계층
+import core  # 지식 인덱스(FAISS) 관리 로직
 from dotenv import load_dotenv
 
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -248,7 +249,7 @@ def _normalize_title(value):
 
 def save_to_json(filename, new_data):
     if not new_data:
-        return
+        return 0
     path = os.path.join(DATA_DIR, f"{filename}.json")
     old_data = []
     if os.path.exists(path):
@@ -294,6 +295,7 @@ def save_to_json(filename, new_data):
                     os.remove(tmp_path)
                 except OSError:
                     pass
+    return added_count
 
 
 def search_routine(topic):
@@ -343,9 +345,11 @@ def search_routine(topic):
 
 
 def run_cycle():
+    total_added = 0
+
     # 1. 고정 데이터
-    save_to_json("KMA-Weather", fetch_kma_weather())
-    save_to_json("Stock-Market", fetch_stock_market())
+    total_added += save_to_json("KMA-Weather", fetch_kma_weather()) or 0
+    total_added += save_to_json("Stock-Market", fetch_stock_market()) or 0
 
     # 2. 스마트 주제 선정 및 수집
     topics = get_smart_topics()
@@ -353,9 +357,24 @@ def run_cycle():
 
     for t in topics:
         news, web = search_routine(t)
-        save_to_json("Naver-News", news)
-        save_to_json("Google-Search", web)
+        total_added += save_to_json("Naver-News", news) or 0
+        total_added += save_to_json("Google-Search", web) or 0
         time.sleep(1)
+
+    # 3. 신규 데이터 수집 시 또는 인덱스 파일 부재 시 안전하게 FAISS 인덱스 갱신
+    need_rebuild = total_added > 0 or not (os.path.exists(core.DB_PATH) and os.path.exists(core.DOCS_PATH))
+    if need_rebuild:
+        print(f"🔄 신규 데이터 {total_added}건 감지: FAISS 지식 인덱스를 갱신합니다...", flush=True)
+        try:
+            ok = core.rebuild_knowledge()
+            if ok:
+                print("✅ FAISS 지식 인덱스 갱신 완료", flush=True)
+            else:
+                print("⚠️ FAISS 지식 인덱스 갱신 실패 (core.rebuild_knowledge 반환값 False)", flush=True)
+        except Exception as e:
+            print(f"⚠️ FAISS 지식 인덱스 갱신 중 예외 발생: {e}", flush=True)
+    else:
+        print("💡 신규 데이터 없음: 지식 인덱스 갱신을 건너뜁니다.", flush=True)
 
 
 # --- [ 4. 메인 루프 (10분 주기) ] ---
