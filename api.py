@@ -13,6 +13,7 @@ import uuid
 import hashlib
 import threading
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Header, Request
@@ -28,6 +29,22 @@ load_dotenv()
 APP_PASSWORD = os.getenv("APP_PASSWORD")
 # 토큰 서명용. 지정하지 않으면 프로세스마다 새로 만들어져 재시작 시 로그인이 풀린다.
 SECRET_KEY = os.getenv("SECRET_KEY") or uuid.uuid4().hex
+
+# 세션 토큰 유효 기간 (초). 기본값: 86400 (24시간)
+def _get_session_ttl() -> int:
+    raw = os.getenv("SESSION_TTL_SECONDS", "86400").strip()
+    try:
+        val = int(raw)
+        if 0 < val <= 31536000:
+            return val
+    except ValueError:
+        pass
+    return 86400
+
+SESSION_TTL_SECONDS = _get_session_ttl()
+
+# 리버스 프록시(Render 등) 환경에서 X-Forwarded-For 헤더 신뢰 여부
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "false").lower() in ("true", "1", "yes")
 
 CORS_ORIGINS = [
     o.strip() for o in os.getenv(
@@ -49,51 +66,104 @@ app.add_middleware(
 )
 
 
-# --- [ 인증 ] ---
+# --- [ 인증 및 세션 (Phase 3: Expiration & Stable Owner) ] ---
 # APP_PASSWORD가 없으면 로컬 단독 모드(인증 없음, 네임스페이스 'local').
-# 있으면 로그인 시 서명된 토큰을 발급하고, 토큰 안의 세션 id가 대화 네임스페이스가 된다.
-# 서명 방식이라 서버를 재시작해도 토큰이 살아 있다(SECRET_KEY 고정 시).
+# 있으면 로그인 시 서명 및 만료시간(TTL)이 포함된 v2 토큰을 발급한다.
+# 단일 APP_PASSWORD 기반 private chatbot이므로, 인증된 모든 세션은 안정적인 'local' 대화 저장소를 공유한다.
+# 토큰 포맷: v2.<session_id>.<issued_at>.<expires_at>.<signature>
 
-def _sign(session_id):
-    return hmac.new(SECRET_KEY.encode(), session_id.encode(), hashlib.sha256).hexdigest()[:32]
+def _sign(payload: str) -> str:
+    return hmac.new(SECRET_KEY.encode(), payload.encode(), hashlib.sha256).hexdigest()
 
 
-def _issue_token():
+def _issue_token() -> str:
     sid = uuid.uuid4().hex
-    return f"{sid}.{_sign(sid)}"
+    iat = int(time.time())
+    exp = iat + SESSION_TTL_SECONDS
+    payload = f"v2.{sid}.{iat}.{exp}"
+    return f"{payload}.{_sign(payload)}"
 
 
-def _verify_token(token):
-    if not token or "." not in token:
+def _verify_token(token: str) -> dict | None:
+    """토큰 검증: 형식이 맞고, 서명이 일치하며, 만료되지 않은 경우 세션 정보 반환.
+    만료되었거나 변조된 경우, 또는 구버전(v1 무만료) 토큰은 거부된다.
+    """
+    if not token or not isinstance(token, str):
         return None
-    sid, sig = token.rsplit(".", 1)
-    if not re.fullmatch(r"[0-9a-f]{32}", sid or ""):
+    parts = token.split(".")
+    if len(parts) != 5:
         return None
-    return sid if hmac.compare_digest(sig, _sign(sid)) else None
+    version, sid, iat_s, exp_s, sig = parts
+    if version != "v2":
+        return None
+    if not re.fullmatch(r"[0-9a-f]{32}", sid):
+        return None
+    try:
+        iat = int(iat_s)
+        exp = int(exp_s)
+    except ValueError:
+        return None
+
+    payload = f"v2.{sid}.{iat}.{exp}"
+    if not hmac.compare_digest(sig, _sign(payload)):
+        return None
+
+    now = int(time.time())
+    if now > exp:
+        return None
+
+    return {"session_id": sid, "issued_at": iat, "expires_at": exp}
 
 
-def user_key(authorization):
-    """요청자의 대화 네임스페이스. 인증이 필요한데 실패하면 401."""
+def user_key(authorization: str | None) -> str:
+    """요청자의 대화 네임스페이스. 인증이 필요한데 실패하면 401.
+    단일 APP_PASSWORD 기반 앱이므로 인증된 사용자는 모두 안정적인 'local' 네임스페이스를 공유한다.
+    """
     if not APP_PASSWORD:
         return "local"
     token = ""
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization[7:].strip()
-    sid = _verify_token(token)
-    if not sid:
+    session = _verify_token(token)
+    if not session:
         raise HTTPException(status_code=401, detail="인증이 필요합니다.")
-    return f"s-{sid}"
+    return "local"
 
 
-# --- [ 요청 제한 ] ---
+# --- [ 요청 제한 & 프록시 헤더 처리 ] ---
+
+def get_client_ip(request: Request) -> str:
+    if TRUST_PROXY_HEADERS:
+        forwarded_for = request.headers.get("x-forwarded-for")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+            if client_ip:
+                return client_ip
+    return request.client.host if request.client else "unknown"
+
 
 _rate_state = defaultdict(list)
 _rate_lock = threading.Lock()
+_last_rate_cleanup = 0.0
 
 
-def rate_limit(key, limit, window_sec):
+def rate_limit(key: str, limit: int, window_sec: int) -> bool:
+    global _last_rate_cleanup
     now = time.time()
     with _rate_lock:
+        # 주기적 정리 (60초마다 만료된 키 완전히 제거 → 메모리 누수 차단)
+        if now - _last_rate_cleanup > 60:
+            stale_keys = []
+            for k, timestamps in list(_rate_state.items()):
+                valid = [t for t in timestamps if now - t < 300]
+                if not valid:
+                    stale_keys.append(k)
+                else:
+                    _rate_state[k] = valid
+            for k in stale_keys:
+                _rate_state.pop(k, None)
+            _last_rate_cleanup = now
+
         hits = [t for t in _rate_state[key] if now - t < window_sec]
         if len(hits) >= limit:
             _rate_state[key] = hits
@@ -103,11 +173,14 @@ def rate_limit(key, limit, window_sec):
         return True
 
 
-def client_id(request, key):
-    """세션이 있으면 세션, 없으면 IP 기준으로 제한한다."""
-    if key != "local":
-        return key
-    return request.client.host if request.client else "unknown"
+def client_id(request: Request, authorization: str | None = None) -> str:
+    """세션 토큰이 유효하면 세션 식별자, 없으면 클라이언트 IP 기준으로 식별한다."""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+        session = _verify_token(token)
+        if session:
+            return f"sid:{session['session_id']}"
+    return f"ip:{get_client_ip(request)}"
 
 
 # --- [ 스키마 ] ---
@@ -156,7 +229,8 @@ def session_info(authorization: str | None = Header(default=None)):
 def login(body: LoginBody, request: Request):
     if not APP_PASSWORD:
         return {"token": None, "auth_required": False}
-    if not rate_limit(f"login:{request.client.host if request.client else '?'}", 5, 60):
+    ip = get_client_ip(request)
+    if not rate_limit(f"login:{ip}", 5, 60):
         raise HTTPException(status_code=429, detail="시도가 너무 잦습니다. 잠시 후 다시 시도해주세요.")
     if not hmac.compare_digest(body.password or "", APP_PASSWORD):
         raise HTTPException(status_code=401, detail="비밀번호가 올바르지 않습니다.")
@@ -190,43 +264,54 @@ def list_chats(authorization: str | None = Header(default=None)):
 @app.post("/api/chats")
 def create_chat(body: ChatCreateBody, authorization: str | None = Header(default=None)):
     key = user_key(authorization)
-    chats = core.load_chats(key)
-    title = core.sanitize_input(body.title or "")
-    if not title:
-        default_title = f"대화 {time.strftime('%H:%M:%S')}"
-        title = core.unique_title(default_title, chats)
-    chat = core.new_chat(title=title)
-    chats[chat["id"]] = chat
-    core.save_chats(key, chats)
+    raw_title = core.sanitize_input(body.title or "")
+
+    def _create(chats):
+        title = raw_title
+        if not title:
+            default_title = f"대화 {time.strftime('%H:%M:%S')}"
+            title = core.unique_title(default_title, chats)
+        chat = core.new_chat(title=title)
+        chats[chat["id"]] = chat
+        return chat
+
+    chat = core.modify_chats(key, _create)
     return {"id": chat["id"], "title": chat["title"], "messages": []}
 
 
 @app.patch("/api/chats/{chat_id}")
 def rename(chat_id: str, body: ChatRenameBody, authorization: str | None = Header(default=None)):
     key = user_key(authorization)
-    chats = core.load_chats(key)
-    if chat_id not in chats:
-        raise HTTPException(status_code=404, detail="대화를 찾을 수 없습니다.")
     new_title = core.sanitize_input(body.title)
     if not new_title:
         raise HTTPException(status_code=400, detail="이름이 비어 있습니다.")
-    chat = chats[chat_id]
-    if isinstance(chat, dict):
-        chat["title"] = new_title
-        chat["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    else:
-        chats[chat_id] = {"id": chat_id, "title": new_title, "messages": chat}
-    core.save_chats(key, chats)
-    return {"id": chat_id, "title": new_title}
+
+    def _rename(chats):
+        if chat_id not in chats:
+            return None
+        chat = chats[chat_id]
+        if isinstance(chat, dict):
+            chat["title"] = new_title
+            chat["updated_at"] = datetime.now(timezone.utc).isoformat()
+        else:
+            chats[chat_id] = {"id": chat_id, "title": new_title, "messages": chat}
+        return {"id": chat_id, "title": new_title}
+
+    result = core.modify_chats(key, _rename)
+    if not result:
+        raise HTTPException(status_code=404, detail="대화를 찾을 수 없습니다.")
+    return result
 
 
 @app.delete("/api/chats/{chat_id}")
 def delete_chat(chat_id: str, authorization: str | None = Header(default=None)):
     key = user_key(authorization)
-    chats = core.load_chats(key)
-    if chats.pop(chat_id, None) is None:
+
+    def _del(chats):
+        return chats.pop(chat_id, None) is not None
+
+    if not core.modify_chats(key, _del):
         raise HTTPException(status_code=404, detail="대화를 찾을 수 없습니다.")
-    core.save_chats(key, chats)
     return {"ok": True}
 
 
@@ -247,7 +332,8 @@ def knowledge(authorization: str | None = Header(default=None)):
 @app.post("/api/knowledge/refresh")
 def refresh_knowledge(request: Request, authorization: str | None = Header(default=None)):
     key = user_key(authorization)
-    if not rate_limit(f"rebuild:{client_id(request, key)}", *REBUILD_RATE_LIMIT):
+    cid = client_id(request, authorization)
+    if not rate_limit(f"rebuild:{cid}", *REBUILD_RATE_LIMIT):
         raise HTTPException(status_code=429, detail="요청이 너무 잦습니다. 잠시 후 다시 시도해주세요.")
     if not core.rebuild_knowledge():
         raise HTTPException(status_code=400, detail="동기화할 지식이 없거나 재구축에 실패했습니다.")
@@ -265,7 +351,8 @@ def _sse(payload):
 def chat_stream(body: MessageBody, request: Request,
                 authorization: str | None = Header(default=None)):
     key = user_key(authorization)
-    if not rate_limit(f"chat:{client_id(request, key)}", *CHAT_RATE_LIMIT):
+    cid = client_id(request, authorization)
+    if not rate_limit(f"chat:{cid}", *CHAT_RATE_LIMIT):
         raise HTTPException(status_code=429, detail="요청이 너무 잦습니다. 잠시 후 다시 시도해주세요.")
 
     if core.detect_injection(body.message):
@@ -274,22 +361,19 @@ def chat_stream(body: MessageBody, request: Request,
     if not question:
         raise HTTPException(status_code=400, detail="메시지가 비어 있습니다.")
 
-    chats = core.load_chats(key)
-    if body.chat_id not in chats:
-        chats[body.chat_id] = core.new_chat(chat_id=body.chat_id)
+    def _append_user(chats):
+        if body.chat_id not in chats:
+            chats[body.chat_id] = core.new_chat(chat_id=body.chat_id)
+        chat = chats[body.chat_id]
+        if isinstance(chat, list):
+            chat = {"id": body.chat_id, "title": body.chat_id, "messages": chat}
+            chats[body.chat_id] = chat
+        prior = list(chat.get("messages", []))
+        chat.setdefault("messages", []).append({"role": "user", "content": question})
+        chat["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return prior
 
-    chat = chats[body.chat_id]
-    if isinstance(chat, list):
-        chat = {"id": body.chat_id, "title": body.chat_id, "messages": chat}
-        chats[body.chat_id] = chat
-
-    # Multi-turn Memory: 현재 질문을 추가하기 전의 직전 대화 기록 추출
-    prior_history = list(chat.get("messages", []))
-
-    # 사용자 메시지 저장
-    chat.setdefault("messages", []).append({"role": "user", "content": question})
-    chat["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-    core.save_chats(key, chats)
+    prior_history = core.modify_chats(key, _append_user)
 
     # Multi-turn 프롬프트 생성 (RAG 지식 + 이전 대화 맥락 + 현재 질문)
     prompt = core.build_prompt(question, history=prior_history)
@@ -302,9 +386,6 @@ def chat_stream(body: MessageBody, request: Request,
                 prompt, system_instruction=core.SYSTEM_INSTRUCTION
             ):
                 if ev["type"] == "chunk":
-                    # 조각 단위로도 비밀값을 가린다. 조각 경계에 걸쳐 잘린 비밀값은
-                    # 여기서 놓칠 수 있으므로, 마지막 done 이벤트에 전문을 다시 필터링해
-                    # 보내고 프론트가 그것으로 교체하도록 한다.
                     parts.append(ev["text"])
                     yield _sse({"type": "chunk", "text": core.filter_output(ev["text"])})
                 elif ev["type"] == "provider":
@@ -320,11 +401,11 @@ def chat_stream(body: MessageBody, request: Request,
 
         answer = core.filter_output("".join(parts))
         if answer:
-            saved = core.load_chats(key)
-            if body.chat_id in saved and isinstance(saved[body.chat_id], dict):
-                saved[body.chat_id].setdefault("messages", []).append({"role": "assistant", "content": answer})
-                saved[body.chat_id]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                core.save_chats(key, saved)
+            def _append_assistant(chats):
+                if body.chat_id in chats and isinstance(chats[body.chat_id], dict):
+                    chats[body.chat_id].setdefault("messages", []).append({"role": "assistant", "content": answer})
+                    chats[body.chat_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
+            core.modify_chats(key, _append_assistant)
         yield _sse({"type": "done", "content": answer})
 
     return StreamingResponse(

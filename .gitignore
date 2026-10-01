@@ -10,9 +10,10 @@ faiss_index.bin
 documents_data.json
 chat_history.json
 
-# 원자적 쓰기용 임시 파일 / 작업 폴더 / 백업 파일
+# 원자적 쓰기용 임시 파일 / 작업 폴더 / 백업 파일 / 락 파일
 *.tmp
 *.bak
+chat_history.json.lock
 scratch/
 
 # 프론트엔드

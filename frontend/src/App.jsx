@@ -24,16 +24,25 @@ export default function App() {
 
   useEffect(() => { checkSession() }, [checkSession])
 
+  const handleAuthError = useCallback((err) => {
+    if (err?.status === 401) {
+      setToken('')
+      checkSession()
+      return true
+    }
+    return false
+  }, [checkSession])
+
   const loadChats = useCallback(async () => {
     try {
       const { chats: list } = await api.listChats()
       setChats(list)
       setCurrentId((prev) => (prev && list.some((c) => c.id === prev) ? prev : list[0]?.id ?? null))
     } catch (err) {
-      if (err.status === 401) { setToken(''); checkSession() }
-      else setBanner(err.message)
+      if (handleAuthError(err)) return
+      setBanner(err.message)
     }
-  }, [checkSession])
+  }, [handleAuthError])
 
   const ready = session && !session.error && (!session.auth_required || session.authenticated)
 
@@ -64,14 +73,20 @@ export default function App() {
       setChats((prev) => [...prev, chat])
       setCurrentId(chat.id)
       setShowDashboard(false)
-    } catch (err) { setBanner(err.message) }
+    } catch (err) {
+      if (handleAuthError(err)) return
+      setBanner(err.message)
+    }
   }
 
   async function renameChat(id, title) {
     try {
       const res = await api.renameChat(id, title)
       setChats((prev) => prev.map((c) => (c.id === id ? { ...c, title: res.title } : c)))
-    } catch (err) { setBanner(err.message) }
+    } catch (err) {
+      if (handleAuthError(err)) return
+      setBanner(err.message)
+    }
   }
 
   async function deleteChat(id) {
@@ -82,7 +97,10 @@ export default function App() {
         setCurrentId((cur) => (cur === id ? next[0]?.id ?? null : cur))
         return next
       })
-    } catch (err) { setBanner(err.message) }
+    } catch (err) {
+      if (handleAuthError(err)) return
+      setBanner(err.message)
+    }
   }
 
   async function send(text) {
@@ -93,7 +111,11 @@ export default function App() {
         setChats((prev) => [...prev, chat])
         setCurrentId(chat.id)
         chatId = chat.id
-      } catch (err) { setBanner(err.message); return }
+      } catch (err) {
+        if (handleAuthError(err)) return
+        setBanner(err.message)
+        return
+      }
     }
 
     // 사용자 메시지를 먼저 붙여 바로 보이게 한다
@@ -125,6 +147,7 @@ export default function App() {
         },
       })
     } catch (err) {
+      if (handleAuthError(err)) return
       setPending({ text: err.message, provider: null, error: true })
     }
   }

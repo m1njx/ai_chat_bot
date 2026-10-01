@@ -9,7 +9,9 @@ import json
 import uuid
 import shutil
 import threading
-from datetime import datetime
+import fcntl
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -27,8 +29,26 @@ MAX_HISTORY_MESSAGES = int(os.getenv("MAX_HISTORY_MESSAGES", "10"))  # 슬라이
 
 os.makedirs(DATA_DIR, exist_ok=True)
 
-# 저장소는 읽기-수정-쓰기라 동시 요청에서 유실될 수 있다
-_store_lock = threading.Lock()
+# 저장소는 읽기-수정-쓰기라 동시 요청에서 유실될 수 있다 (스레드 + 멀티프로세스 락)
+_store_thread_lock = threading.Lock()
+
+
+@contextmanager
+def _storage_lock():
+    """스레드(threading.Lock) 및 프로세스(fcntl.flock) 간 원자적 파일 락.
+    macOS 및 Render(Linux) 환경에서 멀티워커 동시 쓰기로 인한 lost update를 방지한다.
+    """
+    with _store_thread_lock:
+        lock_path = f"{SAVE_FILE}.lock"
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o666)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 # --- [ 입력 정제 / 프롬프트 인젝션 방어 ] ---
@@ -388,6 +408,30 @@ def _migrate_store(raw):
                 }
                 changed = True
 
+    # 3) Phase 3: 세션별 네임스페이스(s-* 등)를 'local' 안정적 네임스페이스로 통합 (Safe Namespace Consolidation)
+    if "local" not in migrated:
+        migrated["local"] = {}
+
+    other_namespaces = [ns for ns in list(migrated.keys()) if ns != "local"]
+    if other_namespaces:
+        for ns in other_namespaces:
+            for cid, chat in list(migrated[ns].items()):
+                if cid not in migrated["local"]:
+                    migrated["local"][cid] = chat
+                else:
+                    # UUID 충돌 검사
+                    existing = migrated["local"][cid]
+                    if existing.get("messages") == chat.get("messages"):
+                        # 동일한 대화이므로 기존 항목 유지
+                        pass
+                    else:
+                        # 내용이 다른 충돌: 새로운 UUID를 발급하여 둘 다 무손실 보존
+                        new_cid = uuid.uuid4().hex
+                        chat["id"] = new_cid
+                        migrated["local"][new_cid] = chat
+            del migrated[ns]
+            changed = True
+
     return migrated, changed
 
 
@@ -421,25 +465,40 @@ def _load_store():
 
     store, changed = _migrate_store(raw)
     if changed:
-        bak_path = f"{SAVE_FILE}.bak"
-        if not os.path.exists(bak_path):
+        bak_p3 = f"{SAVE_FILE}.pre_phase3.json.bak"
+        bak_p2 = f"{SAVE_FILE}.bak"
+        target_bak = bak_p3 if os.path.exists(bak_p2) else bak_p2
+        if not os.path.exists(target_bak):
             try:
-                shutil.copy2(SAVE_FILE, bak_path)
-                print(f"📦 기존 대화 기록 백업 완료: {bak_path}", flush=True)
+                shutil.copy2(SAVE_FILE, target_bak)
+                print(f"📦 기존 대화 기록 백업 완료: {target_bak}", flush=True)
             except OSError as e:
                 print(f"⚠️ 백업 생성 실패: {e}", flush=True)
         _write_store_raw(store)
     return store
 
 
-def load_chats(user_key):
-    with _store_lock:
+def modify_chats(user_key: str, modifier_func):
+    """원자적 트랜잭션 헬퍼:
+    _storage_lock() 내에서 load_store -> modifier_func(chats) -> write_store 수행.
+    멀티스레드 및 uvicorn 멀티프로세스 환경에서 lost update를 방지한다.
+    """
+    with _storage_lock():
+        store = _load_store()
+        chats = store.setdefault(user_key, {})
+        result = modifier_func(chats)
+        _write_store_raw(store)
+        return result
+
+
+def load_chats(user_key: str):
+    with _storage_lock():
         return _load_store().get(user_key, {})
 
 
-def save_chats(user_key, chats):
+def save_chats(user_key: str, chats: dict):
     """임시 파일에 쓴 뒤 os.replace로 교체 → 중간에 죽어도 파일이 깨지지 않는다."""
-    with _store_lock:
+    with _storage_lock():
         store = _load_store()
         store[user_key] = chats
         _write_store_raw(store)

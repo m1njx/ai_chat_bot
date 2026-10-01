@@ -163,12 +163,8 @@ def require_auth():
 
 def get_user_key():
     """대화 기록 네임스페이스.
-    로컬 단독 사용 시 'local' 고정, 인증 모드에서는 브라우저 세션마다 분리."""
-    if not APP_PASSWORD:
-        return "local"
-    if "_user_key" not in st.session_state:
-        st.session_state["_user_key"] = f"s-{uuid.uuid4().hex}"
-    return st.session_state["_user_key"]
+    단일 APP_PASSWORD 기반 프라이빗 챗봇이므로 안정적인 'local' 네임스페이스를 공유한다."""
+    return "local"
 
 
 require_auth()
