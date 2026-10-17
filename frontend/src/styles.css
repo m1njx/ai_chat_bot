@@ -349,6 +349,235 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   background: var(--toss-blue-light); color: var(--toss-blue);
 }
 .banner.error { background: rgba(240, 68, 82, 0.12); color: var(--toss-danger); }
+.banner.success {
+  background: rgba(0, 100, 255, 0.12);
+  color: var(--toss-blue);
+  border: 1px solid rgba(0, 100, 255, 0.25);
+}
+
+/* ── 파일 업로드 드래그 앤 드롭 영역 ── */
+.upload-zone {
+  border: 2px dashed var(--toss-border);
+  border-radius: 18px;
+  padding: 32px 20px;
+  text-align: center;
+  background: var(--toss-bg);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.upload-zone:hover {
+  border-color: var(--toss-blue);
+  background: var(--toss-blue-light);
+}
+.upload-zone.dragging {
+  border-color: var(--toss-blue);
+  background: var(--toss-blue-light);
+  transform: scale(0.995);
+  box-shadow: 0 0 0 4px rgba(0, 100, 255, 0.15);
+}
+.upload-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+.upload-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--toss-text);
+  margin-bottom: 4px;
+}
+.upload-sub {
+  font-size: 13px;
+  color: var(--toss-subtext);
+}
+
+/* ── 파일 목록 테이블 & 뱃지 ── */
+.file-table {
+  width: 100%;
+}
+.type-badge {
+  display: inline-block;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+.type-badge.pdf {
+  background: rgba(240, 68, 82, 0.15);
+  color: var(--toss-danger);
+}
+.type-badge.txt {
+  background: var(--toss-blue-light);
+  color: var(--toss-blue);
+}
+.del-btn {
+  background: transparent;
+  border: 1px solid var(--toss-border);
+  color: var(--toss-danger);
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+.del-btn:hover:not(:disabled) {
+  background: rgba(240, 68, 82, 0.12);
+  border-color: var(--toss-danger);
+}
+
+/* ── RAG 참고 출처 (Citations) ── */
+.msg.assistant-msg {
+  flex-direction: column;
+  align-items: flex-start;
+}
+.citations-container {
+  margin-top: 8px;
+  margin-left: 2px;
+  max-width: 80%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.citations-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--toss-subtext);
+}
+.citations-count {
+  font-size: 11px;
+  color: var(--toss-blue);
+  background: var(--toss-blue-light);
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+.citation-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: var(--toss-card);
+  border: 1px solid var(--toss-border);
+  font-size: 12px;
+  color: var(--toss-text);
+  text-decoration: none;
+  box-shadow: 0 1px 3px var(--toss-shadow);
+  transition: all 0.15s ease;
+  max-width: 100%;
+}
+.citation-chip.clickable {
+  cursor: pointer;
+  color: var(--toss-blue);
+}
+.citation-chip.clickable:hover {
+  background: var(--toss-blue-light);
+  border-color: var(--toss-blue);
+  transform: translateY(-1px);
+}
+.citation-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.citation-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+  font-weight: 500;
+}
+.citation-external-icon {
+  font-size: 11px;
+  color: var(--toss-subtext);
+  margin-left: 2px;
+  flex-shrink: 0;
+}
+
+/* ── 대시보드 지식 소스 신선도 (Freshness Grid & Cards) ── */
+.freshness-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.freshness-card {
+  background: var(--toss-card);
+  border: 1px solid var(--toss-border);
+  border-radius: 14px;
+  padding: 16px;
+  box-shadow: 0 2px 8px var(--toss-shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.freshness-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.freshness-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--toss-text);
+  display: flex;
+  align-items: center;
+}
+.freshness-badge {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.freshness-badge.fresh {
+  background: rgba(37, 211, 102, 0.15);
+  color: #129c45;
+}
+.freshness-badge.caution {
+  background: rgba(255, 170, 0, 0.15);
+  color: #c77700;
+}
+.freshness-badge.stale {
+  background: rgba(240, 68, 82, 0.15);
+  color: var(--toss-danger);
+}
+.freshness-badge.unknown {
+  background: var(--toss-bg);
+  border: 1px solid var(--toss-border);
+  color: var(--toss-subtext);
+}
+.freshness-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.freshness-stat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.freshness-stat-label {
+  color: var(--toss-subtext);
+}
+.freshness-stat-val {
+  font-weight: 600;
+  color: var(--toss-text);
+  font-variant-numeric: tabular-nums;
+}
 
 /* ── 로그인 ── */
 .login-wrap { height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px; }
@@ -364,6 +593,9 @@ button:disabled { cursor: not-allowed; opacity: 0.5; }
   .chat-scroll, .composer-wrap { padding-left: 16px; padding-right: 16px; }
   .topbar { padding-left: 16px; padding-right: 16px; }
   .bubble { max-width: 92%; }
+  .citations-container { max-width: 92%; }
+  .citation-label { max-width: 180px; }
+  .freshness-grid { grid-template-columns: 1fr; }
   .code-header { padding: 6px 10px; font-size: 11px; }
   .table-wrap th, .table-wrap td { padding: 6px 8px; font-size: 13px; }
 }

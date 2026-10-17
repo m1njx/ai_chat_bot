@@ -4,13 +4,16 @@ import requests
 import json
 import re
 import warnings
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import urlencode
 from bs4 import BeautifulSoup
 import llm   # Gemini → LM Studio → OpenAI 자동 전환 계층
 import core  # 지식 인덱스(FAISS) 관리 로직
 from dotenv import load_dotenv
+
+import sys
+import signal
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -33,8 +36,54 @@ if not llm.available():
     print("⚠️ 사용 가능한 AI 제공자가 없습니다. 기본 키워드로만 수집합니다.")
 
 
-DATA_DIR = "data"
+DATA_DIR = core.DATA_DIR
 os.makedirs(DATA_DIR, exist_ok=True)
+
+
+def _write_heartbeat(status: str, added: int = 0, error: str | None = None):
+    """수집기 실행 상태를 collector_heartbeat.json에 원자적으로 기록한다."""
+    hb_path = core.COLLECTOR_HEARTBEAT_PATH
+    now_iso = datetime.now(timezone.utc).isoformat()
+    old = {}
+    if os.path.isfile(hb_path):
+        try:
+            with open(hb_path, "r", encoding="utf-8") as f:
+                old = json.load(f)
+        except Exception:
+            pass
+
+    payload = {
+        "pid": os.getpid(),
+        "updated_at": now_iso,
+        "status": status,
+        "last_cycle_started_at": now_iso if status == "running" else old.get("last_cycle_started_at"),
+        "last_cycle_completed_at": now_iso if status == "success" else old.get("last_cycle_completed_at"),
+        "last_cycle_added": added if status == "success" else old.get("last_cycle_added", 0),
+        "last_error": error if error else (None if status == "success" else old.get("last_error")),
+    }
+    tmp_path = f"{hb_path}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, hb_path)
+    except OSError:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def _sigterm_handler(signum, frame):
+    print("🛑 [brain.py] SIGTERM/SIGINT 수신. 안전하게 종료합니다...", flush=True)
+    _write_heartbeat(status="stopped")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGTERM, _sigterm_handler)
+signal.signal(signal.SIGINT, _sigterm_handler)
 
 # --- [ 1. 고정 수집 엔진: 날씨 & 주식 ] ---
 
@@ -311,8 +360,16 @@ def search_routine(topic):
                 timeout=HTTP_TIMEOUT,
             )
             if n_res.status_code == 200:
+                now_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
                 n_news = [
-                    {"source": "Naver", "title": i.get("title", ""), "description": i.get("description", "")}
+                    {
+                        "source": "Naver",
+                        "title": i.get("title", ""),
+                        "description": i.get("description", ""),
+                        "link": i.get("originallink") or i.get("link", ""),
+                        "date": i.get("pubDate", ""),
+                        "collected_at": now_kst,
+                    }
                     for i in n_res.json().get("items", [])
                 ]
             else:
@@ -330,8 +387,16 @@ def search_routine(topic):
                 timeout=HTTP_TIMEOUT,
             )
             if g_res.status_code == 200:
+                now_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
                 g_search = [
-                    {"source": "Google", "title": i.get("title", ""), "description": i.get("snippet", "")}
+                    {
+                        "source": "Google",
+                        "title": i.get("title", ""),
+                        "description": i.get("snippet", ""),
+                        "link": i.get("link", ""),
+                        "date": i.get("date", ""),
+                        "collected_at": now_kst,
+                    }
                     for i in g_res.json().get("organic", [])
                 ]
             elif g_res.status_code == 400 and "credits" in g_res.text:
@@ -345,36 +410,43 @@ def search_routine(topic):
 
 
 def run_cycle():
+    _write_heartbeat(status="running")
     total_added = 0
+    try:
+        # 1. 고정 데이터
+        total_added += save_to_json("KMA-Weather", fetch_kma_weather()) or 0
+        total_added += save_to_json("Stock-Market", fetch_stock_market()) or 0
 
-    # 1. 고정 데이터
-    total_added += save_to_json("KMA-Weather", fetch_kma_weather()) or 0
-    total_added += save_to_json("Stock-Market", fetch_stock_market()) or 0
+        # 2. 스마트 주제 선정 및 수집
+        topics = get_smart_topics()
+        print(f"🎯 현재 탐색 주제: {topics}")
 
-    # 2. 스마트 주제 선정 및 수집
-    topics = get_smart_topics()
-    print(f"🎯 현재 탐색 주제: {topics}")
+        for t in topics:
+            news, web = search_routine(t)
+            total_added += save_to_json("Naver-News", news) or 0
+            total_added += save_to_json("Google-Search", web) or 0
+            time.sleep(1)
 
-    for t in topics:
-        news, web = search_routine(t)
-        total_added += save_to_json("Naver-News", news) or 0
-        total_added += save_to_json("Google-Search", web) or 0
-        time.sleep(1)
+        # 3. 신규 데이터 수집 시 또는 활성 세대 부재 시 안전하게 지식 세대 갱신
+        need_rebuild = total_added > 0 or not core.has_active_generation()
+        if need_rebuild:
+            print(f"🔄 신규 데이터 {total_added}건 감지: FAISS 지식 세대를 갱신합니다...", flush=True)
+            try:
+                ok = core.rebuild_knowledge(trigger="collector")
+                if ok:
+                    print("✅ FAISS 지식 세대 갱신 완료", flush=True)
+                else:
+                    print("⚠️ FAISS 지식 세대 갱신 실패", flush=True)
+            except Exception as e:
+                print(f"⚠️ FAISS 지식 세대 갱신 중 예외 발생: {e}", flush=True)
+        else:
+            print("💡 신규 데이터 없음: 지식 세대 갱신을 건너뜁니다.", flush=True)
 
-    # 3. 신규 데이터 수집 시 또는 인덱스 파일 부재 시 안전하게 FAISS 인덱스 갱신
-    need_rebuild = total_added > 0 or not (os.path.exists(core.DB_PATH) and os.path.exists(core.DOCS_PATH))
-    if need_rebuild:
-        print(f"🔄 신규 데이터 {total_added}건 감지: FAISS 지식 인덱스를 갱신합니다...", flush=True)
-        try:
-            ok = core.rebuild_knowledge()
-            if ok:
-                print("✅ FAISS 지식 인덱스 갱신 완료", flush=True)
-            else:
-                print("⚠️ FAISS 지식 인덱스 갱신 실패 (core.rebuild_knowledge 반환값 False)", flush=True)
-        except Exception as e:
-            print(f"⚠️ FAISS 지식 인덱스 갱신 중 예외 발생: {e}", flush=True)
-    else:
-        print("💡 신규 데이터 없음: 지식 인덱스 갱신을 건너뜁니다.", flush=True)
+        _write_heartbeat(status="success", added=total_added)
+        return total_added
+    except Exception as e:
+        _write_heartbeat(status="error", error=str(e))
+        raise
 
 
 # --- [ 4. 메인 루프 (10분 주기) ] ---

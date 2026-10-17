@@ -4,7 +4,18 @@ services:
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: sh start.sh
+    healthCheckPath: /api/health
+    disk:
+      name: ai-knowledge-disk
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
+      - key: APP_DATA_DIR
+        value: /var/data
+      - key: ENV
+        value: production
+      - key: MAX_UPLOAD_BYTES
+        value: "20971520"
       # numpy 2.4는 3.11 이상, streamlit/torch는 3.10 이상을 요구한다.
       - key: PYTHON_VERSION
         value: 3.11.9

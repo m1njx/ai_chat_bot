@@ -1,70 +1,68 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
 
-function CodeBlock({ language, value }) {
-  const [copied, setCopied] = useState(false)
+const CodeBlock = lazy(() => import('./CodeBlock'))
 
-  const copy = async () => {
-    try {
-      if (navigator?.clipboard?.writeText) {
-        await navigator.clipboard.writeText(value)
-      } else {
-        const ta = document.createElement('textarea')
-        ta.value = value
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        document.body.appendChild(ta)
-        ta.select()
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-      }
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      /* 클립보드 접근 불가 환경 안전 처리 */
-    }
+function getSourceIcon(src) {
+  if (src.type === 'weather') return '🌤️'
+  if (src.type === 'news') return '📰'
+  if (src.type === 'stock') return '📈'
+  if (src.type === 'upload') {
+    const isPdf = src.file_type === 'pdf' || (src.title && src.title.toLowerCase().endsWith('.pdf'))
+    return isPdf ? '📄' : '📝'
+  }
+  if (src.type === 'web') return '🌐'
+  return '📌'
+}
+
+function CitationChip({ source }) {
+  const icon = getSourceIcon(source)
+  const isSafeUrl = source.url && (source.url.startsWith('http://') || source.url.startsWith('https://'))
+
+  if (isSafeUrl) {
+    return (
+      <a
+        href={source.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="citation-chip clickable"
+        title={`${source.title || source.label} (새 창에서 열기)`}
+      >
+        <span className="citation-icon">{icon}</span>
+        <span className="citation-label">{source.label || source.title}</span>
+        <span className="citation-external-icon">↗</span>
+      </a>
+    )
   }
 
-  const langLabel = language ? language.toLowerCase() : 'code'
-
   return (
-    <div className="code-block-wrap">
-      <div className="code-header">
-        <span className="code-lang">{langLabel}</span>
-        <button
-          type="button"
-          className={`copy-code-btn${copied ? ' copied' : ''}`}
-          onClick={copy}
-          title={copied ? '복사 완료' : '코드 복사'}
-          aria-label={copied ? '코드가 클립보드에 복사됨' : '코드 복사'}
-        >
-          {copied ? '✓ 복사됨' : '복사'}
-        </button>
+    <span className="citation-chip" title={source.title || source.label}>
+      <span className="citation-icon">{icon}</span>
+      <span className="citation-label">{source.label || source.title}</span>
+    </span>
+  )
+}
+
+function CitationsList({ sources }) {
+  if (!sources || sources.length === 0) return null
+  return (
+    <div className="citations-container">
+      <div className="citations-header">
+        <span className="citations-title">참고 출처</span>
+        <span className="citations-count">{sources.length}개</span>
       </div>
-      <SyntaxHighlighter
-        language={language || 'text'}
-        style={vscDarkPlus}
-        customStyle={{
-          margin: 0,
-          padding: '12px 14px',
-          background: 'transparent',
-          fontSize: '13.5px',
-          lineHeight: '1.55',
-          borderRadius: 0,
-        }}
-        PreTag="div"
-      >
-        {value}
-      </SyntaxHighlighter>
+      <div className="citation-wrap">
+        {sources.map((src, idx) => (
+          <CitationChip key={`${src.type}-${src.title || ''}-${idx}`} source={src} />
+        ))}
+      </div>
     </div>
   )
 }
 
 /** react-markdown은 기본적으로 원시 HTML을 실행하지 않는다(rehype-raw 미사용). */
-function Bubble({ role, content, streaming, error }) {
+function Bubble({ role, content, streaming, error, sources }) {
   if (role === 'user') {
     return (
       <div className="msg user">
@@ -74,7 +72,7 @@ function Bubble({ role, content, streaming, error }) {
   }
 
   return (
-    <div className="msg">
+    <div className="msg assistant-msg">
       <div className={`bubble assistant${error ? ' error' : ''}`}>
         {error ? (
           content
@@ -94,7 +92,11 @@ function Bubble({ role, content, streaming, error }) {
                   const match = /language-(\w+)/.exec(className)
                   const lang = match ? match[1] : ''
                   const code = String(children.props.children || '').replace(/\n$/, '')
-                  return <CodeBlock language={lang} value={code} />
+                  return (
+                    <Suspense fallback={<pre className="code-fallback"><code>{code}</code></pre>}>
+                      <CodeBlock language={lang} value={code} />
+                    </Suspense>
+                  )
                 }
                 return <pre>{children}</pre>
               },
@@ -119,6 +121,9 @@ function Bubble({ role, content, streaming, error }) {
         )}
         {streaming && content && <span className="caret" aria-hidden="true" />}
       </div>
+      {!error && sources && sources.length > 0 && (
+        <CitationsList sources={sources} />
+      )}
     </div>
   )
 }
@@ -195,7 +200,7 @@ export default function ChatView({
           <p className="page-sub">학습된 지식을 기반으로 전문적인 답변을 제공합니다.</p>
 
           {messages.map((m, i) => (
-            <Bubble key={i} role={m.role} content={m.content} />
+            <Bubble key={i} role={m.role} content={m.content} sources={m.sources} />
           ))}
 
           {pending && (
@@ -205,6 +210,7 @@ export default function ChatView({
                 content={pending.text}
                 streaming={!pending.error && isStreaming}
                 error={pending.error}
+                sources={pending.sources}
               />
               {pending.provider && pending.provider !== 'gemini' && (
                 <div className="msg">

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { api, streamChat, setToken } from './api'
 import Sidebar from './components/Sidebar'
 import ChatView from './components/ChatView'
-import Dashboard from './components/Dashboard'
 import Login from './components/Login'
+import ErrorBoundary from './components/ErrorBoundary'
+
+const Dashboard = lazy(() => import('./components/Dashboard'))
 
 export default function App() {
   const [session, setSession] = useState(null)   // null이면 아직 확인 전
@@ -142,11 +144,12 @@ export default function App() {
     setChats((prev) =>
       prev.map((c) => (c.id === chatId ? { ...c, messages: [...c.messages, { role: 'user', content: text }] } : c))
     )
-    setPending({ text: '', provider: null, error: false })
+    setPending({ text: '', provider: null, error: false, sources: [] })
 
     const controller = new AbortController()
     abortRef.current = controller
     let accumulatedText = ''
+    let receivedSources = []
 
     try {
       await streamChat({
@@ -154,21 +157,25 @@ export default function App() {
         message: text,
         signal: controller.signal,
         onEvent: (ev) => {
-          if (ev.type === 'chunk') {
+          if (ev.type === 'sources') {
+            receivedSources = ev.sources || []
+            setPending((p) => ({ ...p, sources: receivedSources }))
+          } else if (ev.type === 'chunk') {
             accumulatedText += ev.text
             setPending((p) => ({ ...p, text: accumulatedText }))
           } else if (ev.type === 'provider') {
             setPending((p) => ({ ...p, provider: ev.provider }))
           } else if (ev.type === 'done') {
+            const finalSources = ev.sources && ev.sources.length > 0 ? ev.sources : receivedSources
             // 서버가 최종 필터링한 전문으로 교체한다
             setChats((prev) =>
               prev.map((c) => (c.id === chatId
-                ? { ...c, messages: [...c.messages, { role: 'assistant', content: ev.content }] }
+                ? { ...c, messages: [...c.messages, { role: 'assistant', content: ev.content, sources: finalSources }] }
                 : c))
             )
             setPending(null)
           } else if (ev.type === 'error') {
-            setPending({ text: ev.message, provider: null, error: true })
+            setPending({ text: ev.message, provider: null, error: true, sources: [] })
           }
         },
       })
@@ -178,7 +185,7 @@ export default function App() {
         if (accumulatedText) {
           setChats((prev) =>
             prev.map((c) => (c.id === chatId
-              ? { ...c, messages: [...c.messages, { role: 'assistant', content: accumulatedText }] }
+              ? { ...c, messages: [...c.messages, { role: 'assistant', content: accumulatedText, sources: receivedSources }] }
               : c))
           )
         }
@@ -193,7 +200,7 @@ export default function App() {
       } else if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError')) {
         errMsg = '서버에 연결할 수 없습니다. 백엔드 서버 상태를 확인해주세요.'
       }
-      setPending({ text: errMsg, provider: null, error: true })
+      setPending({ text: errMsg, provider: null, error: true, sources: [] })
     } finally {
       if (abortRef.current === controller) {
         abortRef.current = null
@@ -204,44 +211,48 @@ export default function App() {
   const isStreaming = Boolean(pending && !pending.error)
 
   return (
-    <div className="layout">
-      <Sidebar
-        collapsed={collapsed}
-        chats={chats}
-        currentId={currentId}
-        showDashboard={showDashboard}
-        onSelect={handleSelectChat}
-        onCreate={createChat}
-        onRename={renameChat}
-        onDelete={deleteChat}
-        onToggleDashboard={() => setShowDashboard((v) => !v)}
-      />
-      <main className="main">
-        <div className="topbar">
-          <button className="icon-btn" onClick={() => setCollapsed((v) => !v)}
-                  title={collapsed ? '사이드바 열기' : '사이드바 접기'}>
-            {collapsed ? '»' : '«'}
-          </button>
-          {banner && (
-            <div className="banner error" style={{ margin: 0, flex: 1 }}
-                 onClick={() => setBanner('')} role="alert">{banner}</div>
-          )}
-        </div>
+    <ErrorBoundary>
+      <div className="layout">
+        <Sidebar
+          collapsed={collapsed}
+          chats={chats}
+          currentId={currentId}
+          showDashboard={showDashboard}
+          onSelect={handleSelectChat}
+          onCreate={createChat}
+          onRename={renameChat}
+          onDelete={deleteChat}
+          onToggleDashboard={() => setShowDashboard((v) => !v)}
+        />
+        <main className="main">
+          <div className="topbar">
+            <button className="icon-btn" onClick={() => setCollapsed((v) => !v)}
+                    title={collapsed ? '사이드바 열기' : '사이드바 접기'}>
+              {collapsed ? '»' : '«'}
+            </button>
+            {banner && (
+              <div className="banner error" style={{ margin: 0, flex: 1 }}
+                   onClick={() => setBanner('')} role="alert">{banner}</div>
+            )}
+          </div>
 
-        {showDashboard ? (
-          <Dashboard />
-        ) : (
-          <ChatView
-            title={current?.title || current?.id || '새 대화'}
-            messages={current?.messages ?? []}
-            pending={pending}
-            onSend={send}
-            disabled={isStreaming}
-            isStreaming={isStreaming}
-            onStop={stop}
-          />
-        )}
-      </main>
-    </div>
+          <Suspense fallback={<div className="login-wrap" style={{ flex: 1 }}>불러오는 중…</div>}>
+            {showDashboard ? (
+              <Dashboard />
+            ) : (
+              <ChatView
+                title={current?.title || current?.id || '새 대화'}
+                messages={current?.messages ?? []}
+                pending={pending}
+                onSend={send}
+                disabled={isStreaming}
+                isStreaming={isStreaming}
+                onStop={stop}
+              />
+            )}
+          </Suspense>
+        </main>
+      </div>
+    </ErrorBoundary>
   )
 }

@@ -12,13 +12,15 @@ import hmac
 import uuid
 import hashlib
 import threading
+import logging
 from collections import defaultdict
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, HTTPException, Header, Request, File, UploadFile, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 import core
@@ -26,9 +28,34 @@ import llm
 
 load_dotenv()
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger("api")
+
+ENV = os.getenv("ENV", "development").lower()
+IS_PRODUCTION = ENV == "production" or os.getenv("RENDER", "").lower() in ("true", "1")
+
 APP_PASSWORD = os.getenv("APP_PASSWORD")
-# 토큰 서명용. 지정하지 않으면 프로세스마다 새로 만들어져 재시작 시 로그인이 풀린다.
-SECRET_KEY = os.getenv("SECRET_KEY") or uuid.uuid4().hex
+SECRET_KEY = os.getenv("SECRET_KEY")
+
+def _validate_production_secrets():
+    env = os.getenv("ENV", "development").lower()
+    is_prod = env == "production" or os.getenv("RENDER", "").lower() in ("true", "1")
+    if is_prod:
+        if not os.getenv("APP_PASSWORD"):
+            raise RuntimeError("🚨 [PRODUCTION] APP_PASSWORD 환경변수가 설정되지 않았습니다. 프로덕션 배포 시 필수입니다.")
+        if not os.getenv("SECRET_KEY"):
+            raise RuntimeError("🚨 [PRODUCTION] SECRET_KEY 환경변수가 설정되지 않았습니다. 고정 서명 키가 필수입니다.")
+    return True
+
+
+_validate_production_secrets()
+
+if not SECRET_KEY:
+    SECRET_KEY = uuid.uuid4().hex
 
 # 세션 토큰 유효 기간 (초). 기본값: 86400 (24시간)
 def _get_session_ttl() -> int:
@@ -55,8 +82,35 @@ CORS_ORIGINS = [
 MAX_MESSAGE_CHARS = 4000
 CHAT_RATE_LIMIT = (10, 60)        # 60초당 10회
 REBUILD_RATE_LIMIT = (2, 300)     # 300초당 2회
+UPLOAD_RATE_LIMIT = (10, 60)      # 60초당 10회 업로드/삭제
 
 app = FastAPI(title="AI 지식 창고 API", version="1.0.0")
+
+@app.middleware("http")
+async def request_tracing_middleware(request: Request, call_next):
+    raw_req_id = request.headers.get("x-request-id", "").strip()
+    if raw_req_id and re.fullmatch(r"[a-zA-Z0-9_\-]{1,64}", raw_req_id):
+        req_id = raw_req_id
+    else:
+        req_id = uuid.uuid4().hex[:16]
+    request.state.request_id = req_id
+
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    duration_ms = (time.perf_counter() - t0) * 1000
+
+    response.headers["X-Request-ID"] = req_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+    if request.url.path == "/api/health":
+        logger.debug(f"method={request.method} route={request.url.path} status={response.status_code} duration_ms={duration_ms:.2f} req_id={req_id}")
+    else:
+        logger.info(f"method={request.method} route={request.url.path} status={response.status_code} duration_ms={duration_ms:.2f} req_id={req_id}")
+
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -206,7 +260,20 @@ class MessageBody(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    """Liveness probe: 프로세스 생존 여부만 신속하게 확인."""
+    return {"ok": True, "status": "alive"}
+
+
+@app.get("/api/ready")
+def readiness(response: Response):
+    """Readiness probe:
+    1. 활성 지식 세대 무결성
+    2. 데이터 저장소 쓰기 권한
+    (비밀정보 및 내부 절대 경로는 반환하지 않음)"""
+    is_ready, details = core.check_readiness()
+    if not is_ready:
+        response.status_code = 503
+    return details
 
 
 @app.get("/api/session")
@@ -326,6 +393,10 @@ def knowledge(authorization: str | None = Header(default=None)):
         "total_documents": len(docs),
         # 원문 그대로 전달한다. 렌더링 시 이스케이프하는 것은 프론트 책임(React 기본 동작).
         "samples": [str(d)[:250] for d in docs[:5]],
+        "sources_status": core.get_sources_freshness(),
+        "generation_id": core.get_active_generation_id(),
+        "collector_status": core.get_collector_status(),
+        "storage": core.get_storage_usage(),
     }
 
 
@@ -339,6 +410,65 @@ def refresh_knowledge(request: Request, authorization: str | None = Header(defau
         raise HTTPException(status_code=400, detail="동기화할 지식이 없거나 재구축에 실패했습니다.")
     _, docs = core.load_index()
     return {"ok": True, "total_documents": len(docs)}
+
+
+@app.get("/api/knowledge/files")
+def list_knowledge_files(authorization: str | None = Header(default=None)):
+    user_key(authorization)
+    return {"files": core.get_uploaded_files()}
+
+
+@app.post("/api/knowledge/files", status_code=201)
+async def upload_knowledge_file(
+    request: Request,
+    file: UploadFile = File(...),
+    authorization: str | None = Header(default=None),
+):
+    # Auth-first: 미인증 사용자는 파일 파싱 및 임베딩 전 즉시 차단
+    user_key(authorization)
+    cid = client_id(request, authorization)
+    if not rate_limit(f"upload:{cid}", *UPLOAD_RATE_LIMIT):
+        raise HTTPException(status_code=429, detail="업로드 요청이 너무 잦습니다. 잠시 후 다시 시도해주세요.")
+
+    try:
+        content = await file.read()
+    except Exception:
+        raise HTTPException(status_code=400, detail="파일을 읽는 도중 오류가 발생했습니다.")
+
+    try:
+        record = await run_in_threadpool(
+            core.save_and_index_upload,
+            filename=file.filename or "uploaded_file",
+            content=content,
+            content_type=file.content_type,
+        )
+        return record
+    except core.UploadValidationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+    except Exception as e:
+        print(f"⚠️ 업로드 처리 실패: {e}", flush=True)
+        raise HTTPException(status_code=500, detail="파일 색인 및 저장 중 서버 오류가 발생했습니다.")
+
+
+@app.delete("/api/knowledge/files/{file_id}")
+def delete_knowledge_file(
+    file_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    user_key(authorization)
+    cid = client_id(request, authorization)
+    if not rate_limit(f"upload:{cid}", *UPLOAD_RATE_LIMIT):
+        raise HTTPException(status_code=429, detail="요청이 너무 잦습니다. 잠시 후 다시 시도해주세요.")
+
+    try:
+        record = core.delete_upload_file(file_id)
+        return {"ok": True, "deleted_id": file_id, "original_name": record.get("original_name")}
+    except core.UploadValidationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+    except Exception as e:
+        print(f"⚠️ 파일 삭제 처리 실패: {e}", flush=True)
+        raise HTTPException(status_code=500, detail="파일 삭제 및 인덱스 갱신 중 서버 오류가 발생했습니다.")
 
 
 # --- [ 채팅 스트리밍 (SSE) ] ---
@@ -375,8 +505,12 @@ def chat_stream(body: MessageBody, request: Request,
 
     prior_history = core.modify_chats(key, _append_user)
 
-    # Multi-turn 프롬프트 생성 (RAG 지식 + 이전 대화 맥락 + 현재 질문)
-    prompt = core.build_prompt(question, history=prior_history)
+    req_id = getattr(request.state, "request_id", "unknown")
+    stream_t0 = time.perf_counter()
+    logger.info(f"[CHAT_STREAM_START] req_id={req_id} chat_id={body.chat_id} msg_len={len(question)}")
+
+    # Multi-turn 프롬프트 생성 (RAG 지식 + 이전 대화 맥락 + 현재 질문) 및 사용된 출처 추출
+    prompt, used_sources = core.build_prompt_with_sources(question, history=prior_history)
 
     def event_stream():
         # 동기 제너레이터를 넘기면 Starlette이 스레드풀에서 돌리므로 이벤트 루프를 막지 않는다
@@ -384,7 +518,13 @@ def chat_stream(body: MessageBody, request: Request,
         answer = ""
         saved_answer = False
         has_error = False
+        completed = False
         try:
+            # RAG 출처가 있으면 청크 전송 전에 클라이언트에 전달
+            if used_sources:
+                logger.info(f"[CHAT_STREAM_SOURCES] req_id={req_id} sources_count={len(used_sources)}")
+                yield _sse({"type": "sources", "sources": used_sources})
+
             for ev in llm.generate_stream(
                 prompt, system_instruction=core.SYSTEM_INSTRUCTION
             ):
@@ -392,31 +532,43 @@ def chat_stream(body: MessageBody, request: Request,
                     parts.append(ev["text"])
                     yield _sse({"type": "chunk", "text": core.filter_output(ev["text"])})
                 elif ev["type"] == "provider":
+                    logger.info(f"[CHAT_STREAM_PROVIDER] req_id={req_id} provider={ev.get('provider')}")
                     yield _sse(ev)
                 else:
                     has_error = True
                     yield _sse({"type": "error", "message": "AI 호출 중 에러가 발생했습니다."})
-                    print(f"⚠️ 답변 생성 실패: {ev.get('message')}", flush=True)
+                    logger.error(f"[CHAT_STREAM_ERROR] req_id={req_id} provider_error={ev.get('message')}")
                     return
+            completed = True
         except Exception as e:
             has_error = True
-            print(f"⚠️ 스트림 처리 중 오류: {e}", flush=True)
+            logger.error(f"[CHAT_STREAM_EXCEPTION] req_id={req_id} error={e}")
             yield _sse({"type": "error", "message": "AI 호출 중 에러가 발생했습니다."})
             return
         finally:
+            duration_ms = (time.perf_counter() - stream_t0) * 1000
             if not saved_answer and not has_error:
                 saved_answer = True
                 answer = core.filter_output("".join(parts))
                 if answer:
+                    if not completed:
+                        logger.info(f"[CHAT_STREAM_ABORT] req_id={req_id} partial_chars={len(answer)} duration_ms={duration_ms:.2f}")
+                    else:
+                        logger.info(f"[CHAT_STREAM_COMPLETE] req_id={req_id} output_chars={len(answer)} duration_ms={duration_ms:.2f}")
                     def _append_assistant(chats):
                         if body.chat_id in chats and isinstance(chats[body.chat_id], dict):
                             msgs = chats[body.chat_id].setdefault("messages", [])
                             if not msgs or msgs[-1].get("role") != "assistant":
-                                msgs.append({"role": "assistant", "content": answer})
+                                msg_obj = {"role": "assistant", "content": answer}
+                                if used_sources:
+                                    msg_obj["sources"] = used_sources
+                                msgs.append(msg_obj)
                                 chats[body.chat_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
                     core.modify_chats(key, _append_assistant)
+            elif has_error:
+                logger.error(f"[CHAT_STREAM_FINAL_ERROR] req_id={req_id} duration_ms={duration_ms:.2f}")
 
-        yield _sse({"type": "done", "content": answer})
+        yield _sse({"type": "done", "content": answer, "sources": used_sources if used_sources else []})
 
     return StreamingResponse(
         event_stream(),

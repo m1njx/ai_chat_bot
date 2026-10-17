@@ -47,6 +47,23 @@ export const api = {
   deleteChat: (id) => request(`/api/chats/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   knowledge: () => request('/api/knowledge'),
   refreshKnowledge: () => request('/api/knowledge/refresh', { method: 'POST' }),
+  listKnowledgeFiles: () => request('/api/knowledge/files'),
+  uploadKnowledgeFile: async (file) => {
+    const form = new FormData()
+    form.append('file', file)
+    const h = {}
+    const t = getToken()
+    if (t) h['Authorization'] = `Bearer ${t}`
+    const res = await fetch(`${BASE}/api/knowledge/files`, {
+      method: 'POST',
+      headers: h,
+      body: form,
+    })
+    if (!res.ok) throw await toError(res)
+    return res.json()
+  },
+  deleteKnowledgeFile: (fileId) =>
+    request(`/api/knowledge/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' }),
 }
 
 /**
