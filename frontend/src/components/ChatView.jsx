@@ -138,6 +138,7 @@ export default function ChatView({
   isStreaming,
 }) {
   const [draft, setDraft] = useState('')
+  const [userScrolledUp, setUserScrolledUp] = useState(false)
   const bottomRef = useRef(null)
   const textareaRef = useRef(null)
   const scrollRef = useRef(null)
@@ -147,7 +148,9 @@ export default function ChatView({
     const el = scrollRef.current
     if (!el) return
     const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    isNearBottomRef.current = distanceToBottom <= 120
+    const atBottom = distanceToBottom <= 80
+    isNearBottomRef.current = atBottom
+    setUserScrolledUp(!atBottom)
   }, [])
 
   // 메시지 목록 변경 시(사용자 발송, 대화 변경 등) 즉시 맨 아래로 스크롤
@@ -156,12 +159,20 @@ export default function ChatView({
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages])
 
-  // 스트리밍 조각 수신 시 사용자가 하단 부근에 머물러 있을 때만 부드럽게 자동 스크롤
+  // 스트리밍 조각 수신 시 사용자가 하단에 머물러 있을 때만 지터 없이 즉각 스크롤
   useEffect(() => {
-    if (isNearBottomRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    if (isNearBottomRef.current && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [pending?.text])
+
+  const scrollToBottom = () => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
+    }
+    isNearBottomRef.current = true
+    setUserScrolledUp(false)
+  }
 
   function autosize(el) {
     if (!el) return
@@ -173,6 +184,7 @@ export default function ChatView({
     const text = draft.trim()
     if (!text || disabled || isStreaming) return
     setDraft('')
+    setUserScrolledUp(false)
     autosize(textareaRef.current)
     onSend(text)
   }
@@ -224,6 +236,17 @@ export default function ChatView({
       </div>
 
       <div className="composer-wrap">
+        {userScrolledUp && (
+          <button
+            type="button"
+            className="scroll-bottom-pill"
+            onClick={scrollToBottom}
+            title="최신 답변으로 이동"
+            aria-label="최신 답변으로 이동"
+          >
+            ↓ 최신 답변 보기
+          </button>
+        )}
         <div className="composer">
           <textarea
             ref={textareaRef}

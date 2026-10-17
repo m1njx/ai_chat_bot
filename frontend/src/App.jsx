@@ -34,6 +34,65 @@ export default function App() {
 
   useEffect(() => { checkSession() }, [checkSession])
 
+  // 모바일 사이드바가 열려 있을 때 ESC 키로 닫기
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.key === 'Escape' && !collapsed && window.innerWidth <= 720) {
+        setCollapsed(true)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [collapsed])
+
+  // 화면 크기가 바뀌어도 모바일 사이드바의 배경과 키보드 포커스를 격리한다.
+  useEffect(() => {
+    if (collapsed) return
+    const media = window.matchMedia('(max-width: 720px)')
+    const sidebar = document.getElementById('app-sidebar')
+    const main = document.querySelector('.main')
+    if (!sidebar || !main) return
+    const orig = document.body.style.overflow
+    const opener = main.querySelector('[aria-controls="app-sidebar"]')
+    let active = false
+    function sync() {
+      if (!media.matches) {
+        main.inert = false
+        document.body.style.overflow = orig
+        if (active) opener?.focus()
+        active = false
+        return
+      }
+      main.inert = true
+      document.body.style.overflow = 'hidden'
+      sidebar.querySelector('button')?.focus()
+      active = true
+    }
+    function trapFocus(e) {
+      if (!active || e.key !== 'Tab') return
+      const buttons = sidebar.querySelectorAll('button:not(:disabled), input:not(:disabled)')
+      const first = buttons[0]
+      const last = buttons[buttons.length - 1]
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault()
+        last?.focus()
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault()
+        first?.focus()
+      }
+    }
+    sync()
+    media.addEventListener('change', sync)
+    sidebar.addEventListener('keydown', trapFocus)
+    return () => {
+      media.removeEventListener('change', sync)
+      sidebar.removeEventListener('keydown', trapFocus)
+      main.inert = false
+      document.body.style.overflow = orig
+      if (active) opener?.focus()
+    }
+  }, [collapsed, session])
+
   const handleAuthError = useCallback((err) => {
     if (err?.status === 401) {
       setToken('')
@@ -81,6 +140,16 @@ export default function App() {
     stop()
     setCurrentId(id)
     setShowDashboard(false)
+    if (typeof window !== 'undefined' && window.innerWidth <= 720) {
+      setCollapsed(true)
+    }
+  }
+
+  const handleToggleDashboard = () => {
+    setShowDashboard((v) => !v)
+    if (typeof window !== 'undefined' && window.innerWidth <= 720) {
+      setCollapsed(true)
+    }
   }
 
   async function createChat() {
@@ -90,6 +159,9 @@ export default function App() {
       setChats((prev) => [...prev, chat])
       setCurrentId(chat.id)
       setShowDashboard(false)
+      if (typeof window !== 'undefined' && window.innerWidth <= 720) {
+        setCollapsed(true)
+      }
     } catch (err) {
       if (handleAuthError(err)) return
       setBanner(err.message)
@@ -213,6 +285,11 @@ export default function App() {
   return (
     <ErrorBoundary>
       <div className="layout">
+        <div
+          className={`sidebar-backdrop${!collapsed ? ' active' : ''}`}
+          onClick={() => setCollapsed(true)}
+          aria-hidden="true"
+        />
         <Sidebar
           collapsed={collapsed}
           chats={chats}
@@ -222,12 +299,20 @@ export default function App() {
           onCreate={createChat}
           onRename={renameChat}
           onDelete={deleteChat}
-          onToggleDashboard={() => setShowDashboard((v) => !v)}
+          onToggleDashboard={handleToggleDashboard}
+          onClose={() => setCollapsed(true)}
         />
         <main className="main">
           <div className="topbar">
-            <button className="icon-btn" onClick={() => setCollapsed((v) => !v)}
-                    title={collapsed ? '사이드바 열기' : '사이드바 접기'}>
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={() => setCollapsed((v) => !v)}
+              title={collapsed ? '사이드바 열기' : '사이드바 접기'}
+              aria-label={collapsed ? '사이드바 열기' : '사이드바 접기'}
+              aria-expanded={!collapsed}
+              aria-controls="app-sidebar"
+            >
               {collapsed ? '»' : '«'}
             </button>
             {banner && (

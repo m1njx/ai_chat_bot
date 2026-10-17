@@ -35,8 +35,10 @@ export default function Dashboard() {
   const [busy, setBusy] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [deletingId, setDeletingId] = useState(null)
+  const [fileToDelete, setFileToDelete] = useState(null)
   const [dragActive, setDragActive] = useState(false)
   const fileInputRef = useRef(null)
+  const deleteDialogRef = useRef(null)
 
   const load = useCallback(async () => {
     try {
@@ -138,16 +140,24 @@ export default function Dashboard() {
     }
   }
 
-  async function handleDelete(file) {
-    const ok = window.confirm(`"${file.original_name}" 문서를 지식 저장소에서 삭제하시겠습니까?\n색인 인덱스가 자동으로 재구축됩니다.`)
-    if (!ok) return
+  function requestDelete(file) {
+    setFileToDelete(file)
+  }
 
+  function cancelDelete() {
+    setFileToDelete(null)
+  }
+
+  async function executeDelete() {
+    if (!fileToDelete) return
+    const file = fileToDelete
     setDeletingId(file.id)
     setError('')
     setSuccess('')
     try {
       await api.deleteKnowledgeFile(file.id)
       setSuccess(`"${file.original_name}" 문서가 삭제되었습니다.`)
+      setFileToDelete(null)
       await load()
     } catch (err) {
       setError(err.message)
@@ -155,6 +165,14 @@ export default function Dashboard() {
       setDeletingId(null)
     }
   }
+
+  // 기본 dialog가 포커스 이동, Tab 순환 및 닫힌 뒤 포커스 복원을 처리한다.
+  useEffect(() => {
+    if (!fileToDelete) return
+    const dialog = deleteDialogRef.current
+    dialog.showModal()
+    return () => dialog.close()
+  }, [fileToDelete])
 
   return (
     <div className="chat-scroll">
@@ -212,59 +230,97 @@ export default function Dashboard() {
               아직 업로드된 개인 문서가 없습니다. 위 영역에 PDF나 TXT 문서를 추가해보세요.
             </div>
           ) : (
-            <div className="table-wrap" style={{ margin: 0 }}>
-              <table className="file-table">
-                <thead>
-                  <tr>
-                    <th>파일명</th>
-                    <th style={{ width: 80, textAlign: 'center' }}>형식</th>
-                    <th style={{ width: 90, textAlign: 'right' }}>크기</th>
-                    <th style={{ width: 120, textAlign: 'center' }}>청크/페이지</th>
-                    <th style={{ width: 140 }}>업로드 일시</th>
-                    <th style={{ width: 80, textAlign: 'center' }}>관리</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {files.map((file) => {
-                    const isDeleting = deletingId === file.id
-                    const ext = (file.original_name.split('.').pop() || '').toLowerCase()
-                    return (
-                      <tr key={file.id}>
-                        <td>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, wordBreak: 'break-all' }}>
-                            <span>{ext === 'pdf' ? '📕' : '📄'}</span>
-                            <span style={{ fontWeight: 500 }}>{file.original_name}</span>
-                          </div>
-                        </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <span className={`type-badge ${ext}`}>{ext}</span>
-                        </td>
-                        <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                          {formatBytes(file.file_size)}
-                        </td>
-                        <td style={{ textAlign: 'center', color: 'var(--toss-subtext)', fontSize: 13 }}>
-                          {file.num_chunks}개 청크
-                          {file.num_pages > 1 ? ` (${file.num_pages}p)` : ''}
-                        </td>
-                        <td style={{ color: 'var(--toss-subtext)', fontSize: 13 }}>
-                          {formatDate(file.uploaded_at)}
-                        </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <button
-                            className="del-btn"
-                            onClick={() => handleDelete(file)}
-                            disabled={isDeleting || uploading}
-                            title="문서 삭제 및 인덱스 갱신"
-                          >
-                            {isDeleting ? '삭제 중…' : '삭제'}
-                          </button>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+            <>
+              {/* 데스크톱 및 태블릿 테이블 뷰 */}
+              <div className="table-wrap" style={{ margin: 0 }}>
+                <table className="file-table">
+                  <thead>
+                    <tr>
+                      <th>파일명</th>
+                      <th style={{ width: 80, textAlign: 'center' }}>형식</th>
+                      <th style={{ width: 90, textAlign: 'right' }}>크기</th>
+                      <th style={{ width: 120, textAlign: 'center' }}>청크/페이지</th>
+                      <th style={{ width: 140 }}>업로드 일시</th>
+                      <th style={{ width: 80, textAlign: 'center' }}>관리</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {files.map((file) => {
+                      const isDeleting = deletingId === file.id
+                      const ext = (file.original_name.split('.').pop() || '').toLowerCase()
+                      return (
+                        <tr key={file.id}>
+                          <td>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, wordBreak: 'break-all' }}>
+                              <span>{ext === 'pdf' ? '📕' : '📄'}</span>
+                              <span style={{ fontWeight: 500 }}>{file.original_name}</span>
+                            </div>
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <span className={`type-badge ${ext}`}>{ext}</span>
+                          </td>
+                          <td style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                            {formatBytes(file.file_size)}
+                          </td>
+                          <td style={{ textAlign: 'center', color: 'var(--toss-subtext)', fontSize: 13 }}>
+                            {file.num_chunks}개 청크
+                            {file.num_pages > 1 ? ` (${file.num_pages}p)` : ''}
+                          </td>
+                          <td style={{ color: 'var(--toss-subtext)', fontSize: 13 }}>
+                            {formatDate(file.uploaded_at)}
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <button
+                              className="del-btn"
+                              onClick={() => requestDelete(file)}
+                              disabled={isDeleting || uploading}
+                              title="문서 삭제 및 인덱스 갱신"
+                            >
+                              {isDeleting ? '삭제 중…' : '삭제'}
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* 모바일 화면 전용 카드 뷰 */}
+              <div className="file-cards-wrap" aria-label="업로드된 문서 카드 목록">
+                {files.map((file) => {
+                  const isDeleting = deletingId === file.id
+                  const ext = (file.original_name.split('.').pop() || '').toLowerCase()
+                  return (
+                    <div className="file-card" key={file.id}>
+                      <div className="file-card-header">
+                        <div className="file-card-title">
+                          <span>{ext === 'pdf' ? '📕' : '📄'}</span>
+                          <span>{file.original_name}</span>
+                        </div>
+                        <span className={`type-badge ${ext}`}>{ext}</span>
+                      </div>
+                      <div className="file-card-meta">
+                        <div><strong>크기:</strong> {formatBytes(file.file_size)}</div>
+                        <div><strong>청크:</strong> {file.num_chunks}개{file.num_pages > 1 ? ` (${file.num_pages}p)` : ''}</div>
+                        <div style={{ gridColumn: 'span 2' }}><strong>등록일:</strong> {formatDate(file.uploaded_at)}</div>
+                      </div>
+                      <div className="file-card-actions">
+                        <button
+                          type="button"
+                          className="del-btn"
+                          onClick={() => requestDelete(file)}
+                          disabled={isDeleting || uploading}
+                          title="문서 삭제 및 인덱스 갱신"
+                        >
+                          {isDeleting ? '삭제 중…' : '문서 삭제'}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
           )}
         </div>
 
@@ -339,6 +395,65 @@ export default function Dashboard() {
               <div className="toss-card sample" key={i}>{s}…</div>
             ))
           : <div className="banner">저장된 지식이 없습니다. 지식 새로고침을 진행해주세요.</div>}
+
+        {/* ── 문서 삭제 확인 모달 다이얼로그 (UI-006) ── */}
+        {fileToDelete && (
+            <dialog
+              ref={deleteDialogRef}
+              className="modal-card"
+              onClick={(e) => {
+                if (e.target === e.currentTarget && !deletingId) {
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) cancelDelete()
+                }
+              }}
+              onCancel={(e) => {
+                e.preventDefault()
+                if (!deletingId) cancelDelete()
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== 'Tab') return
+                const buttons = e.currentTarget.querySelectorAll('button:not(:disabled)')
+                const first = buttons[0]
+                const last = buttons[buttons.length - 1]
+                if ((e.shiftKey && document.activeElement === first) || (!e.shiftKey && document.activeElement === last)) {
+                  e.preventDefault()
+                  ;(e.shiftKey ? last : first)?.focus()
+                }
+              }}
+              aria-modal="true"
+              aria-labelledby="delete-dialog-title"
+            >
+              <h3 id="delete-dialog-title" style={{ marginTop: 0, fontSize: 18, color: 'var(--toss-text)' }}>
+                🗑️ 문서 삭제 확인
+              </h3>
+              <p style={{ color: 'var(--toss-subtext)', fontSize: 14, lineHeight: 1.6 }}>
+                <strong>"{fileToDelete.original_name}"</strong> 문서를 지식 저장소에서 삭제하시겠습니까?<br />
+                삭제 시 검색 색인 인덱스가 안전하게 자동 재구축됩니다.
+              </p>
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="side-btn"
+                  style={{ width: 'auto', padding: '8px 16px' }}
+                  onClick={cancelDelete}
+                  autoFocus
+                  disabled={Boolean(deletingId)}
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  className="side-btn primary"
+                  style={{ width: 'auto', padding: '8px 16px', background: 'var(--toss-danger)', color: '#fff' }}
+                  onClick={executeDelete}
+                  disabled={Boolean(deletingId)}
+                >
+                  {deletingId ? '삭제 중…' : '영구 삭제'}
+                </button>
+              </div>
+            </dialog>
+        )}
       </div>
     </div>
   )
