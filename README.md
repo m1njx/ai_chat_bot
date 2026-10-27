@@ -1,6 +1,8 @@
 # 🧠 나만의 AI 지식 창고 (My AI Knowledge Bot)
 
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=Streamlit&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?style=for-the-badge&logo=react&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![Gemini AI](https://img.shields.io/badge/Gemini%20AI-4285F4?style=for-the-badge&logo=google-gemini&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![Toss Design](https://img.shields.io/badge/Design-Toss%20Style-blue?style=for-the-badge)
@@ -13,6 +15,9 @@
 - **미니멀리즘 디자인**: 토스 앱의 감성을 그대로 담은 깔끔하고 직관적인 인터페이스.
 - **다크 모드 완벽 지원**: 시스템 설정에 따라 라이트/다크 모드로 자동 전환됩니다.
 - **Pretendard 서체**: 가독성 높은 폰트와 부드러운 애니메이션 적용.
+- **반응형 레이아웃**: 모바일 사이드바와 문서 카드, 태블릿·데스크톱 문서 테이블을 제공합니다.
+- **채팅 편의 기능**: 스트리밍 답변, 생성 중지, Markdown·코드 강조, 최신 답변 이동 버튼을 지원합니다.
+- **삭제 확인과 키보드 접근성**: 대화·문서 삭제 전에 확인하며, 모바일 사이드바와 문서 삭제 모달은 Tab 포커스 순환 및 Escape 닫기를 지원합니다.
 
 ### 2. 지능형 지식 통합 (RAG Engine)
 - **멀티 소스 지원**: PDF, TXT 파일은 물론 네이버 뉴스, 주식 시장 데이터(JSON)까지 통합 관리합니다.
@@ -24,7 +29,7 @@
 - **HTML 이스케이프**: 수집 콘텐츠와 사용자가 지은 대화 제목은 화면에 렌더링하기 전 모두 이스케이프합니다.
 - **출력 필터링**: 응답에 API 키·비밀값이 섞여 나오면 마스킹합니다.
 - **Rate Limit**: 세션 단위로 채팅 60초당 10회, 지식 재구축 300초당 2회로 제한합니다.
-- **접근 제어(선택)**: `APP_PASSWORD`를 설정하면 비밀번호 게이트가 켜지고, 대화 기록이 브라우저 세션별로 분리됩니다. 설정하지 않으면 로컬 단독 사용 모드로 동작합니다.
+- **접근 제어(선택)**: `APP_PASSWORD`를 설정하면 비밀번호 게이트와 서명·만료시간이 있는 세션 토큰을 사용합니다. 인증된 세션은 동일한 개인 대화 저장소를 공유합니다. 설정하지 않으면 로컬 단독 사용 모드로 동작합니다.
 
 > ⚠️ `APP_PASSWORD` 없이 공개 배포하면 접속자 모두가 **하나의 대화 기록을 공유**합니다. 인터넷에 올릴 때는 반드시 설정하세요.
 
@@ -36,7 +41,7 @@
 - **OpenAI**: `OPENAI_API_KEY`가 필요하며, **선불 크레딧이 있어야 동작합니다**(크레딧 0이면 429).
 - 순서는 `LLM_ORDER` 환경변수로 바꿀 수 있습니다. 예: `LLM_ORDER=lmstudio,gemini`
 
-### 4. 자율형 데이터 수집 (Autonomous Brain)
+### 5. 자율형 데이터 수집 (Autonomous Brain)
 - `brain.py`가 백그라운드에서 주기적으로 새로운 뉴스 및 주식 정보를 수집하여 지식 창고를 항상 최신 상태로 유지합니다.
 
 ## 🛠 Tech Stack
@@ -79,7 +84,10 @@ pip install -r requirements.txt
 ```bash
 python brain.py
 ```
-- **채팅 웹 앱 실행**
+- **React 채팅 웹 앱 실행 (권장)**
+아래 [로컬 실행](#로컬-실행)의 백엔드와 프론트엔드를 각각 실행합니다.
+
+- **Streamlit 채팅 웹 앱 실행 (선택)**
 ```bash
 streamlit run app.py
 ```
@@ -120,11 +128,42 @@ streamlit run app.py
 | POST | `/api/chat/stream` | **SSE 스트리밍 응답** |
 | GET | `/api/knowledge` | 지식 통계·샘플 |
 | POST | `/api/knowledge/refresh` | 인덱스 재구축 (요청 제한 있음) |
+| GET/POST | `/api/knowledge/files` | 업로드 문서 목록 / PDF·TXT 업로드 |
+| DELETE | `/api/knowledge/files/{file_id}` | 업로드 문서 삭제 및 인덱스 재구축 |
 
 ### 성능 관련
 
 - **응답 스트리밍**: 답변을 글자 단위로 즉시 표시합니다. Streamlit판은 전체 응답을 기다린 뒤 한 번에 출력했습니다.
-- **인덱스 캐싱**: FAISS 인덱스와 문서 JSON을 파일 mtime 기준으로 캐시합니다. Streamlit판은 상호작용마다 디스크에서 다시 읽었습니다.
+- **인덱스 캐싱 및 복구**: 활성 지식 세대 ID를 기준으로 FAISS 인덱스와 문서를 캐시하며, 활성 세대가 손상되면 직전 유효 세대로 복구합니다.
+
+## 🧪 검증 및 Phase 11-B
+
+Phase 11-B는 반응형 UI, 모바일 사이드바, 채팅 스크롤, 대화·문서 삭제 확인 및 키보드 접근성을 개선했습니다.
+
+2026-10-17 최종 검증 기록:
+
+- 프론트엔드 린트 및 빌드 성공. 린트 경고 2건과 빌드 청크 크기 경고가 남아 있습니다.
+- 전체 인수·회귀 테스트 9개 스위트 PASS. 임시 데이터 경로를 사용했고 기존 사용자 데이터의 해시가 유지됨을 확인했습니다.
+- 추가 브라우저 검증에서 320~1920px 너비의 13개 해상도, 사이드바·삭제 확인·키보드 포커스·최신 답변 이동을 확인했습니다.
+
+프론트엔드 검증은 `frontend/`에서 실행합니다.
+
+```bash
+npm run lint
+npm run build
+```
+
+전체 인수 테스트는 프로젝트 루트에서 실행합니다. `.venv` 의존성, Google Chrome 및 Python Playwright가 필요하며, 브라우저 테스트는 로컬 포트 8000과 5180을 사용합니다.
+
+```bash
+# 기본 데이터 경로를 사용하는 테스트도 임시 경로에 격리
+APP_DATA_DIR="$(mktemp -d)" APP_PASSWORD='' ENV=development \
+  .venv/bin/python run_all_phase9_tests.py
+```
+
+`APP_DATA_DIR` 초기화 시 기존 지식·대화 파일의 복사본이 만들어질 수 있습니다. 임시 경로에도 개인 데이터가 포함될 수 있으므로 테스트 후 확인하여 정리하세요.
+
+`.env`, 실제 API 키·비밀번호, 대화 기록, `data/`, `knowledge/`, 업로드 파일, `.venv/`, `node_modules/`, `frontend/dist/`는 커밋 대상에서 제외합니다. GitHub 동기화와 서비스 배포는 별도 작업이며, 푸시 전 연결된 서비스의 자동 배포 설정을 확인해야 합니다.
 
 ## 🌐 Render 배포 가이드 (Deployment)
 
