@@ -200,6 +200,3 @@ APP_DATA_DIR="$(mktemp -d)" APP_PASSWORD='' ENV=development \
 - `frontend/`: React + Vite 프론트엔드.
 - `data/`: 수집된 지식(JSON, PDF, TXT)이 저장되는 디렉토리.
 - `faiss_index.bin`: 검색을 위한 벡터 인덱스 파일.
-
----
-Developed with ❤️ by Antigravity AI
